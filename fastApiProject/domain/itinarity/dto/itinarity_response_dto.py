@@ -23,5 +23,5 @@ class TabuSearchResponseDTO(BaseModel):
     - best_route_places: 최적 경로에 포함된 관광지 이름 리스트
     - objective: 최적 경로의 목표 함수 값
     """
-    best_route_places: List[str] = Field(..., example=["스누피가든", "맛집거리"])
+    best_route_place_ids: List[int] = Field(..., example=[101, 102])
     objective: float = Field(..., example=180.0)

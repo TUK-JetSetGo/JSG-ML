@@ -1,209 +1,292 @@
-# domain/itinarity/service/itinarity_service.py
 import random
-import re
+from math import sqrt
 from typing import List, Dict, Any
 
-import numpy as np
-import pulp
+from fastapi import HTTPException
+from domain.place.repository.place_repository import PlaceRepository
+from domain.itinarity.dto.itinarity_request_dto import TabuSearchRequestDTO
+from domain.itinarity.dto.itinarity_response_dto import TabuSearchResponseDTO
 
 
-##################################
-# 유틸리티/보조 함수 정의
-##################################
+def preprocess_places(places: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """places 리스트를 받아, 필요한 필드를 float/int 등으로 변환."""
+    for place in places:
+        # x, y를 float로 변환
+        place["x"] = float(place["x"])
+        place["y"] = float(place["y"])
+
+        # entry_fee가 없다면 0 할당
+        if "entry_fee" not in place:
+            place["entry_fee"] = 0
+
+        # base_score 같은 커스텀 필드를 쓰고 싶다면 기본값 할당
+        if "base_score" not in place:
+            place["base_score"] = 10
+
+        # 필요시 id를 정수 변환도 가능
+        place["id"] = int(place["id"])
+    return places
+
 
 def calculate_distance(p1: tuple, p2: tuple) -> float:
-    """
-    두 지점(p1, p2)의 (x, y) 좌표를 받아 유클리드 거리를 계산.
-    """
-    (x1, y1) = p1
-    (x2, y2) = p2
-    return np.sqrt((x1 - x2) ** 2 + (y1 - y2) ** 2)
+    x1, y1 = p1
+    x2, y2 = p2
+    return sqrt((x1 - y1) ** 2 + (x2 - y2) ** 2)
 
 
-def estimate_travel_cost(dist: float, transport_mode: str = 'car') -> float:
-    """
-    주어진 거리와 교통수단에 따라 이동 비용(또는 점수 감점)을 추정.
-    """
+def estimate_travel_cost(distance: float, transport_mode: str = 'car') -> float:
+    """거리와 선호 교통수단을 기반으로 이동 비용 추정."""
     if transport_mode == 'car':
-        return dist * 1000  # 예: 1km 당 1000원
+        return distance * 1000
     elif transport_mode == 'public':
-        return dist * 500  # 대중교통은 더 저렴하게
-    return dist * 800  # 기타 교통수단
+        return distance * 500
+    return distance * 800
 
 
 def user_satisfaction_score(place_info: Dict[str, Any], user_profile: Dict[str, Any]) -> float:
-    """
-    장소(place_info)와 사용자 프로필(user_profile)을 기반으로
-    해당 장소 방문 시 얻을 만족도를 산출.
-    """
+    """유저 프로필(테마, must_visit 등)에 따른 만족도 스코어 계산."""
     base_score = place_info.get('base_score', 10)
     theme_score = 0
+
+    # 테마 점수
     if 'themes' in user_profile:
         if place_info.get('category') in user_profile['themes']:
             theme_score += 5
+
+    # must_visit 점수
     must_visit_list = user_profile.get('must_visit_list', [])
-    if place_info['id'] in must_visit_list:
+    if place_info.get('id') in must_visit_list:
         theme_score += 10
+
     return base_score + theme_score
 
 
-##################################
-# MIP 기반 최적화 함수
-##################################
+def calculate_route_objective(
+    route: List[int],
+    places: List[Dict[str, Any]],
+    user_profile: Dict[str, Any]
+) -> float:
+    """경로에 대한 목적함수(만족도 - 비용 - 벌점)를 계산."""
+    transport = user_profile.get('preferred_transport', 'car')
+    budget_amount = user_profile.get('budget_amount', float('inf'))
 
-def solve_itinerary_mip(places: List[Dict[str, Any]], user_profile: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    혼합정수계획(MIP)을 이용하여 주어진 후보 관광지(places)와
-    사용자 프로필(user_profile)을 기반으로 최적의 방문 경로를 산출.
+    total_satisfaction = 0.0
+    total_cost = 0.0
 
-    반환값:
-      - status: 최적화 문제 상태 (예: "Optimal")
-      - objective: 목적 함수 최종 값 (만족도 점수 - 이동 비용)
-      - route_indices: (순서, 관광지 인덱스) 쌍 리스트
-      - route_place_ids: 최종 선택된 관광지의 ID 순서 리스트
-    """
-    n = len(places)
+    # 장소 방문 만족도와 입장료 비용
+    for idx in route:
+        place = places[idx]
+        total_satisfaction += user_satisfaction_score(place, user_profile)
+        total_cost += place.get('entry_fee', 0)
 
-    # 거리 및 비용 행렬 계산
-    dist_matrix = np.zeros((n, n))
-    cost_matrix = np.zeros((n, n))
-    for i in range(n):
-        for j in range(n):
-            if i == j:
-                dist_matrix[i, j] = 0
-                cost_matrix[i, j] = 999999  # 자기 자신 이동은 제외
-            else:
-                dist = calculate_distance((places[i]['x'], places[i]['y']),
-                                          (places[j]['x'], places[j]['y']))
-                c = estimate_travel_cost(dist, user_profile.get('preferred_transport', 'car'))
-                dist_matrix[i, j] = dist
-                cost_matrix[i, j] = c
-
-    # 각 장소의 만족도 계산
-    sat_scores = [user_satisfaction_score(places[i], user_profile) for i in range(n)]
-
-    # PuLP 문제 정의: 최대화 문제
-    prob = pulp.LpProblem("Itinerary_Optimization", pulp.LpMaximize)
-
-    # 결정 변수 정의
-    x = pulp.LpVariable.dicts('x', (range(n), range(n)), cat=pulp.LpBinary)
-    y = pulp.LpVariable.dicts('y', (range(n), range(n)), cat=pulp.LpBinary)
-    u = pulp.LpVariable.dicts('u', range(n), lowBound=0, upBound=n, cat=pulp.LpInteger)
-
-    # 목적 함수: 총 만족도 점수 - 총 이동 비용
-    prob += (
-            pulp.lpSum([sat_scores[i] * y[k][i] for i in range(n) for k in range(n)])
-            - pulp.lpSum([cost_matrix[i][j] * x[i][j] for i in range(n) for j in range(n)])
-    )
-
-    # 제약 조건 1: 각 노드는 최대 한 번 방문
-    for i in range(n):
-        prob += pulp.lpSum([y[k][i] for k in range(n)]) <= 1
-
-    # 제약 조건 2: 들어오는 경로와 나가는 경로의 일관성 유지
-    for i in range(n):
-        prob += pulp.lpSum([x[j][i] for j in range(n) if j != i]) == pulp.lpSum([y[k][i] for k in range(n)])
-        prob += pulp.lpSum([x[i][j] for j in range(n) if j != i]) == pulp.lpSum([y[k][i] for k in range(n)])
-
-    # 제약 조건 3: Subtour 방지 (MTZ 제약식, 간략화된 형태)
-    for i in range(1, n):
-        for j in range(1, n):
-            if i != j:
-                prob += u[i] - u[j] + n * x[i][j] <= n - 1
-
-    # 예산 제약: 총 이동 비용 및 입장료 합 <= 예산
-    if 'budget_amount' in user_profile:
-        total_cost_expr = pulp.lpSum([cost_matrix[i][j] * x[i][j] for i in range(n) for j in range(n)])
-        entry_fee_expr = pulp.lpSum(
-            [places[i].get('entry_fee', 0) * pulp.lpSum([y[k][i] for k in range(n)]) for i in range(n)]
+    # 이동 비용 계산
+    for i in range(len(route) - 1):
+        cur_idx = route[i]
+        nxt_idx = route[i + 1]
+        dist = calculate_distance(
+            (places[cur_idx]['x'], places[cur_idx]['y']),
+            (places[nxt_idx]['x'], places[nxt_idx]['y'])
         )
-        prob += (total_cost_expr + entry_fee_expr) <= user_profile['budget_amount']
+        total_cost += estimate_travel_cost(dist, transport)
 
-    # 필수 방문지 제약: must_visit_list에 해당하는 장소는 반드시 방문
-    must_visit_list = user_profile.get('must_visit_list', [])
-    for mv_id in must_visit_list:
-        for i in range(n):
-            if places[i]['id'] == mv_id:
-                prob += pulp.lpSum([y[k][i] for k in range(n)]) == 1
+    # 예산 초과 벌점
+    penalty = 0.0
+    if total_cost > budget_amount:
+        penalty = (total_cost - budget_amount) * 2
 
-    # 최적화 문제 풀기 (CBC 솔버 사용)
-    prob.solve(pulp.PULP_CBC_CMD(msg=1))
+    return total_satisfaction - total_cost - penalty
 
-    status = pulp.LpStatus[prob.status]
-    objective_value = pulp.value(prob.objective)
 
-    # 해석: 각 순서별 방문 노드 추출
-    best_route = []
-    for k in range(n):
-        for i in range(n):
-            if pulp.value(y[k][i]) and pulp.value(y[k][i]) > 0.5:
-                best_route.append((k, i))
-    best_route.sort(key=lambda x: x[0])
-    route_place_ids = [places[i]['id'] for (k, i) in best_route]
+def generate_initial_solution(
+    places: List[Dict[str, Any]],
+    user_profile: Dict[str, Any],
+    insert_limit: int = 5
+) -> List[int]:
+    """
+    초기 해를 생성할 때 must_visit_list에 해당하는 장소는 무조건 포함.
+    이후 일부 다른 장소를 무작위로 추가(최대 insert_limit 개).
+    """
+    must_visit_ids = set(user_profile.get('must_visit_list', []))
+    must_indices = []
+    other_indices = []
 
-    return {
-        'status': status,
-        'objective': objective_value,
-        'route_indices': best_route,
-        'route_place_ids': route_place_ids
+    # must_visit_list에 해당하는 장소의 인덱스 수집
+    for i, p in enumerate(places):
+        if p['id'] in must_visit_ids:
+            must_indices.append(i)
+        else:
+            other_indices.append(i)
+
+    # 무작위로 다른 장소를 추가
+    random.shuffle(other_indices)
+    selected_others = other_indices[:insert_limit]
+
+    # must-visit 장소 + 선택된 다른 장소로 초기 해 구성
+    init_route = must_indices + selected_others
+    # 중복 제거(만약 중복이 있을 경우)
+    init_route = list(dict.fromkeys(init_route))
+
+    return init_route
+
+
+def get_neighbors(
+    route: List[int],
+    places: List[Dict[str, Any]],
+    user_profile: Dict[str, Any],
+    num_neighbors: int = 5
+) -> List[List[int]]:
+    """
+    현재 경로(route)의 이웃해를 생성하는 함수.
+    - Swap(두 위치 교환)
+    - Remove(단, must_visit_list 해당 위치는 제거 불가)
+    - Insert(아직 사용되지 않은 장소를 경로에 삽입)
+    """
+    must_visit_ids = set(user_profile.get('must_visit_list', []))
+    # must_visit_list에 해당하는 장소 인덱스(경로 상에서 위치)
+    must_visit_positions = {
+        idx for idx, pl_idx in enumerate(route)
+        if places[pl_idx]['id'] in must_visit_ids
     }
 
+    neighbors = []
 
-##################################
-# Tabu Search 기반 휴리스틱 함수
-##################################
+    # Swap (무작위 2개 위치 교환)
+    if len(route) > 1:
+        for _ in range(num_neighbors):
+            new_route = route[:]
+            i1, i2 = random.sample(range(len(new_route)), 2)
+            new_route[i1], new_route[i2] = new_route[i2], new_route[i1]
+            neighbors.append(new_route)
 
-def tabu_search_itinerary(places: List[Dict[str, Any]], user_profile: Dict[str, Any],
-                          max_iter: int = 1000) -> Dict[str, Any]:
+    # Remove (must_visit 장소가 아닌 경우에만 제거)
+    removable_positions = [
+        i for i in range(len(route))
+        if i not in must_visit_positions
+    ]
+    if removable_positions:
+        for _ in range(num_neighbors):
+            new_route = route[:]
+            rm_pos = random.choice(removable_positions)
+            del new_route[rm_pos]
+            neighbors.append(new_route)
+
+    # Insert (아직 사용되지 않은 장소 중 무작위로 경로에 삽입)
+    used_indices = set(route)
+    all_indices = set(range(len(places)))
+    insert_candidates = list(all_indices - used_indices)
+    if insert_candidates:
+        for _ in range(num_neighbors):
+            new_route = route[:]
+            to_insert = random.choice(insert_candidates)
+            insert_pos = random.randint(0, len(new_route))
+            new_route.insert(insert_pos, to_insert)
+            neighbors.append(new_route)
+    return neighbors
+
+
+def tabu_search_itinerary(
+    places: List[Dict[str, Any]],
+    user_profile: Dict[str, Any],
+    max_iter: int = 500,
+    tabu_tenure: int = 20
+) -> Dict[str, Any]:
     """
-    간단한 Tabu Search(금기 탐색) 알고리즘을 사용하여 최적의 여행 경로를 산출.
-
-    반환값:
-      - best_route_places: 최적 경로 상의 관광지 이름 리스트
-      - objective: 최적 경로의 목표 함수 값 (만족도 점수 - 이동 비용)
+    Tabu Search 알고리즘을 사용하여 최적 경로(동선)를 탐색.
+    1) must_visit_list를 포함하는 초기 해 생성
+    2) 이웃 해 탐색 시 must_visit_list가 빠지면 무시
+    3) 탐색 중 Tabu List(금지 해) 관리
     """
-    # 초기 해 구성: 필수 방문지를 우선 배치하고 나머지 후보를 무작위 섞음
-    must_visit = user_profile.get('must_visit_list', [])
-    route = [p for p in places if p['id'] in must_visit]
-    others = [p for p in places if p['id'] not in must_visit]
-    random.shuffle(others)
-    insert_limit = min(5, len(others))
-    route.extend(others[:insert_limit])
+    # 초기 해 생성
+    current_route = generate_initial_solution(places, user_profile)
+    current_score = calculate_route_objective(current_route, places, user_profile)
 
-    tabu_list = []
-    tabu_tenure = 10
+    best_route = current_route[:]
+    best_score = current_score
 
-    def calc_objective(route_):
-        total_sat = 0
-        total_cost = 0
-        for i, place in enumerate(route_):
-            total_sat += user_satisfaction_score(place, user_profile)
-            if i < len(route_) - 1:
-                dist = calculate_distance((place['x'], place['y']),
-                                          (route_[i + 1]['x'], route_[i + 1]['y']))
-                c = estimate_travel_cost(dist, user_profile.get('preferred_transport', 'car'))
-                total_cost += c
-        return total_sat - total_cost
+    # 탭루 리스트(최근 해를 저장해 중복/재방문 방지)
+    tabu_list = set()
+    tabu_list.add(tuple(current_route))
 
-    best_route = route[:]
-    best_score = calc_objective(best_route)
+    for _ in range(max_iter):
+        neighbors = get_neighbors(current_route, places, user_profile, num_neighbors=5)
 
-    for iteration in range(max_iter):
-        neighbor = best_route[:]
-        if len(neighbor) > 1:
-            i1, i2 = random.sample(range(len(neighbor)), 2)
-            neighbor[i1], neighbor[i2] = neighbor[i2], neighbor[i1]
-        neighbor_score = calc_objective(neighbor)
-        if neighbor in tabu_list:
-            continue
-        if neighbor_score > best_score:
-            best_route = neighbor
-            best_score = neighbor_score
-        tabu_list.append(neighbor)
-        if len(tabu_list) > tabu_tenure:
-            tabu_list.pop(0)
+        candidate_best_route = None
+        candidate_best_score = float('-inf')
 
+        for nbr in neighbors:
+            nbr_tuple = tuple(nbr)
+            # Tabu 리스트에 있으면 건너뜀
+            if nbr_tuple in tabu_list:
+                continue
+
+            # 경로 내 중복 장소가 있으면 건너뜀
+            if len(nbr) != len(set(nbr)):
+                continue
+
+            # must_visit_list가 전부 포함되어 있는지 확인
+            must_visit_ids = set(user_profile.get('must_visit_list', []))
+            route_place_ids = {places[i]['id'] for i in nbr}
+            if not must_visit_ids.issubset(route_place_ids):
+                continue
+
+            score = calculate_route_objective(nbr, places, user_profile)
+            if score > candidate_best_score:
+                candidate_best_score = score
+                candidate_best_route = nbr
+
+        if candidate_best_route is not None:
+            current_route = candidate_best_route
+            current_score = candidate_best_score
+
+            if current_score > best_score:
+                best_route = current_route[:]
+                best_score = current_score
+
+            tabu_list.add(tuple(current_route))
+            # tabu_tenure(저장 가능 수) 초과 시 가장 오래된 해 제거
+            if len(tabu_list) > tabu_tenure:
+                # 집합(set)을 그대로 pop 하면 랜덤 요소가 제거되므로,
+                # 순서를 보장하기 위해 리스트로 변환 & 0번 인덱스를 제거하는 식으로
+                # 관리할 수도 있습니다. (여기서는 단순 예시로 pop() 사용)
+                tabu_list.pop()
+
+    best_route_place_ids = [places[i]['id'] for i in best_route]
     return {
-        'best_route_places': [p['name'] for p in best_route],
+        'best_route_place_ids': best_route_place_ids,
         'objective': best_score
     }
+
+
+# ----------------------------------------------
+# 여기서부터 실제 'Service' 진입점 함수
+# ----------------------------------------------
+
+def optimize_tabu_search(request: TabuSearchRequestDTO) -> TabuSearchResponseDTO:
+    """
+    Controller(Router)에서 호출할 실제 비즈니스 로직 함수.
+    1) request 정보를 바탕으로 place_repository에서 필요한 데이터를 조회
+    2) user_profile 구성
+    3) tabu_search_itinerary 호출
+    4) 결과를 TabuSearchResponseDTO로 감싸 반환
+    """
+    # 1) place_repository 통해 데이터 조회
+    place_repository = PlaceRepository()
+    places_detail = []
+    for pid in request.places:
+        places_detail.extend(place_repository.get_place_list_by_id(pid))
+
+    user_profile_dict = request.user_profile.dict()
+    # 3) Tabu Search 알고리즘 실행
+    tabu_result = tabu_search_itinerary(
+        places=preprocess_places(places_detail),
+        user_profile=user_profile_dict,
+        max_iter=request.max_iter,
+        # 필요하다면 request에 tabu_tenure를 추가해서 넘길 수도 있음
+    )
+
+    # 4) 결과 DTO 변환
+    response_dto = TabuSearchResponseDTO(
+        best_route_place_ids=tabu_result['best_route_place_ids'],
+        objective=tabu_result['objective']
+    )
+    return response_dto
