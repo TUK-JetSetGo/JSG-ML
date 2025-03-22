@@ -18376,5 +18376,205 @@
         "evChargerPublic": null,
         "evChargerParking": null,
         "evChargerInfo": null
+    },
+
+    {
+        "index": "999",
+        "rank": "999",
+        "id": "11576965",
+        "name": "제주공항",
+        "tel": "064-805-1118",
+        "isCallLink": false,
+        "virtualTel": "",
+        "virtualTelDisplay": "",
+        "ppc": "1",
+        "category": [
+            "공항"
+        ],
+        "categoryPath": [
+            [
+                "222117",
+                "222120",
+                "222147"
+            ],
+            [
+                "1004760",
+                "1004985"
+            ]
+        ],
+        "rcode": "1411025625",
+        "businessStatus": {
+            "requestTime": "202503121604",
+            "status": {
+                "code": 2,
+                "text": "운영 중",
+                "emphasis": false,
+                "description": "운영중",
+                "detailInfo": "18:00에 운영종료"
+            },
+            "businessHours": "202503120900~202503121800",
+            "breakTime": "",
+            "lastOrder": ""
+        },
+        "naviInfoText": null,
+        "address": "제주특별자치도 제주시 구좌읍 송당리 2303-3",
+        "roadAddress": "제주특별자치도 제주시 구좌읍 금백조로 930",
+        "abbrAddress": "송당리 2303-3",
+        "shortAddress": [
+            "제주 제주시 구좌읍",
+            "금백조로 930"
+        ],
+        "display": "스누피가든",
+        "telDisplay": "064-805-1118",
+        "context": [],
+        "reviewCount": 8815,
+        "placeReviewCount": 14916,
+        "ktCallMd": "0d256adcf0cb77d3c311146a684ad649",
+        "coupon": "0",
+        "thumUrl": "https://ldb-phinf.pstatic.net/20230111_200/16734217449280D9xr_JPEG/%B3%D7%C0%CC%B9%F6_%BA%EA%B7%A3%B5%E5%B0%CB%BB%F6_%B8%DE%C0%CE%BD%E6%B3%D7%C0%CF_PC_488x470_10Mb.jpg",
+        "thumUrls": [
+            "https://ldb-phinf.pstatic.net/20230111_200/16734217449280D9xr_JPEG/%B3%D7%C0%CC%B9%F6_%BA%EA%B7%A3%B5%E5%B0%CB%BB%F6_%B8%DE%C0%CE%BD%E6%B3%D7%C0%CF_PC_488x470_10Mb.jpg",
+            "https://ldb-phinf.pstatic.net/20230102_260/1672621894702Gxq4p_JPEG/1.jpg",
+            "https://ldb-phinf.pstatic.net/20230102_118/1672621894667MKr2O_JPEG/2.jpg"
+        ],
+        "type": "s",
+        "isSite": "1",
+        "posExact": "1",
+        "x": "126.4929933",
+        "y": "33.5069233",
+        "itemLevel": "12",
+        "isAdultBusiness": false,
+        "streetPanorama": {
+            "id": "ubmPpnLKle4xTZKWj+eWmA==",
+            "pan": "12.78",
+            "tilt": "10.00",
+            "lng": "126.7779767",
+            "lat": "33.4432858",
+            "fov": "120"
+        },
+        "skyPanorama": {
+            "id": "NF9MTvIdZbvtcbk39KW4rQ==",
+            "pan": "155.54",
+            "tilt": "-35.76",
+            "lng": "126.7761049",
+            "lat": "33.4494154",
+            "fov": "80"
+        },
+        "insidePanorama": null,
+        "interiorPanorama": null,
+        "indoorPanorama": null,
+        "theme": null,
+        "poiInfo": {
+            "relation": {
+                "poiShapeType": "1",
+                "shapeKey": {
+                    "typeName": "RELA",
+                    "wsid": "1.0",
+                    "shapeID": "1875149782"
+                },
+                "boundary": {
+                    "minX": "117.9926027",
+                    "minY": "19.6944771",
+                    "maxX": "117.9926027",
+                    "maxY": "19.6944771"
+                },
+                "detail": [
+                    {
+                        "type": "1",
+                        "sid": "1651175458",
+                        "fullName": "스누피가든입구",
+                        "name": "입구",
+                        "category": "입구(사람+차량)",
+                        "xPos": "126.7785823",
+                        "yPos": "33.4432983"
+                    },
+                    {
+                        "type": "5",
+                        "sid": "1329780776",
+                        "fullName": "스누피가든입구",
+                        "name": "입구",
+                        "category": "입구(사람)",
+                        "xPos": "126.7795251",
+                        "yPos": "33.4431358"
+                    }
+                ]
+            },
+            "hasRelation": true,
+            "road": {
+                "poiShapeType": "1",
+                "shapeKey": null,
+                "boundary": null,
+                "detail": null
+            },
+            "hasRoad": false,
+            "land": null,
+            "hasLand": false,
+            "polygon": null,
+            "hasPolygon": false
+        },
+        "homePage": "https://www.instagram.com/snoopygardenkorea",
+        "description": "",
+        "entranceCoords": {
+            "car": [
+                {
+                    "rep": true,
+                    "x": 126.7785823,
+                    "y": 33.4432983
+                }
+            ],
+            "walk": [
+                {
+                    "rep": true,
+                    "x": 126.7785823,
+                    "y": 33.4432983
+                },
+                {
+                    "rep": false,
+                    "x": 126.7795251,
+                    "y": 33.4431358
+                }
+            ]
+        },
+        "isPollingPlace": false,
+        "bizhourInfo": "운영 중",
+        "menuInfo": "성인 19,000 | 청소년 16,000 | 어린이 13,000 | 성인 단체 16,000 | 청소년 단체 14,000 | 어린이 단체 12,000 | 장애인/국가유공자 9,500 | 연간회원권 99,000",
+        "petrolInfo": null,
+        "couponUrl": null,
+        "couponUrlMobile": null,
+        "hasCardBenefit": false,
+        "menuExist": "1",
+        "hasNaverBooking": true,
+        "naverBookingUrl": "https://booking.naver.com/booking/5/bizes/384281",
+        "naverEasyOrderUrl": null,
+        "hasNaverSmartOrder": false,
+        "reservationLabel": {
+            "standard": true,
+            "preOrder": false,
+            "table": false,
+            "takeout": false
+        },
+        "reservation": {
+            "benefit": ""
+        },
+        "hasBroadcastInfo": false,
+        "broadcastInfo": null,
+        "shopWindowInfo": null,
+        "hasNPay": true,
+        "carWash": "",
+        "parkingPrice": null,
+        "card": null,
+        "distance": "440033.72",
+        "marker": "nres://marker/00079-00145",
+        "markerSelected": "nres://marker/00079-00309",
+        "markerId": "222147",
+        "microReview": [],
+        "michelinGuide": null,
+        "indoor": null,
+        "markerLabel": null,
+        "subway": null,
+        "evChargerVendor": null,
+        "evChargerPublic": null,
+        "evChargerParking": null,
+        "evChargerInfo": null
     }
 ]
