@@ -4,7 +4,7 @@ from app.core.errors import exception_handler, APIException
 
 app = FastAPI(
     title="JSG-ML",
-    description="JSG-ML 연산서버",
+    description="JSG-ML 연산서버 cicd test",
     version="1.0.0",
 )
 app.include_router(itinary.router, prefix="/api/v1")
