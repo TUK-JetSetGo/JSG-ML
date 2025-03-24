@@ -1,0 +1,29 @@
+name: Deploy JSG-ML Docker Container
+
+on:
+  push:
+    paths:
+      - 'JSG-ML/**'
+  pull_request:
+    paths:
+      - 'JSG-ML/**'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build Docker image
+        working-directory: ./JSG-ML
+        run: make build
+
+      - name: Stop existing container if running
+        working-directory: ./JSG-ML
+        run: make stop
+
+      - name: Run new Docker container in detached mode
+        working-directory: ./JSG-ML
+        run: make run-ci
