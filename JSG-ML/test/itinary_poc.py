@@ -116,39 +116,49 @@ def plot_itinerary_on_map(places_dict, daily_itineraries, output_html="itinerary
 if __name__ == "__main__":
     # 예시 응답 JSON (새로운 스키마에 따른 daily_itineraries)
     sample_response = {
-    "code": 200,
-    "message": "success",
-    "data": {
-        "daily_itineraries": [
-            {
-                "day": 1,
-                "route": [
-                    11576965,
-                    17020866,
-                    13490878
-                ],
-                "daily_distance": 0.870084828622077
-            },
-            {
-                "day": 2,
-                "route": [
-                    13491591,
-                    13542738
-                ],
-                "daily_distance": 0.3913007230830695
-            },
-            {
-                "day": 3,
-                "route": [
-                    1566241564,
-                    1843561149,
-                    11576965
-                ],
-                "daily_distance": 0.6481734922645233
-            }
+  "code": 200,
+  "message": "success",
+  "data": {
+    "daily_itineraries": [
+      {
+        "day": 1,
+        "route": [
+          11576965,
+          13491073,
+          12226320
         ],
-        "overall_distance": 2.819280659449899
-    }
+        "daily_distance": 0.47,
+        "daily_duration": 2.07
+      },
+      {
+        "day": 2,
+        "route": [
+          12226320,
+          19932820
+        ],
+        "daily_distance": 0.49,
+        "daily_duration": 1.07
+      },
+      {
+        "day": 3,
+        "route": [
+          19932820
+        ],
+        "daily_distance": 0,
+        "daily_duration": 0
+      },
+      {
+        "day": 4,
+        "route": [
+          19932820,
+          11576965
+        ],
+        "daily_distance": 0.41,
+        "daily_duration": 1.06
+      }
+    ],
+    "overall_distance": 1.3769839092701246
+  }
 }
 
     # 예시: 실제 파일 경로에 맞게 수정
