@@ -9,6 +9,7 @@ from sklearn.cluster import KMeans
 
 import pulp
 
+# NEW: Database-related imports
 import os
 import pymysql
 from dotenv import load_dotenv
@@ -22,28 +23,88 @@ DB_PASSWORD = os.getenv("DB_PASSWORD")
 DB_NAME = os.getenv("DB_NAME")
 
 
-
-
-def load_places(json_path: str) -> Dict[str, Any]:
-    with open(json_path, 'r', encoding='utf-8') as f:
-        data = json.load(f)
+def load_places_from_db(city_id: int) -> Dict[str, Any]:
+    """
+    DB의 tourist_spots 테이블에서 travel_city_id에 해당하는 데이터를 불러와,
+    기존 JSON 파일 구조에 맞게 places_dict를 생성합니다.
+    사용 컬럼:
+      - tourist_spot_id → id
+      - activity_level → reviewCount (대용)
+      - latitude, longitude → y, x
+      - name → name
+      - category → category (JSON 파싱 시도)
+    """
+    connection = pymysql.connect(
+        host=DB_HOST,
+        port=DB_PORT,
+        user=DB_USER,
+        password=DB_PASSWORD,
+        database=DB_NAME,
+        charset='utf8'
+    )
     places_dict = {}
-    for item in data:
-        pid = str(item["id"])
-        x = float(item["x"])
-        y = float(item["y"])
-        review_count = item.get("reviewCount", 0)
-        cat = item.get("category", [])
-        if isinstance(cat, str):
-            cat = [cat]
-        places_dict[pid] = {
-            "id": pid,
-            "name": item.get("name", f"Place_{pid}"),
-            "x": x,
-            "y": y,
-            "reviewCount": review_count,
-            "category": cat,
-        }
+
+    try:
+        with connection.cursor() as cursor:
+            sql = """
+                SELECT 
+                    tourist_spot_id,
+                    activity_level,
+                    latitude,
+                    longitude,
+                    name,
+                    category
+                FROM tourist_spots
+                WHERE travel_city_id = %s
+            """
+            cursor.execute(sql, (city_id,))
+            rows = cursor.fetchall()
+
+            for row in rows:
+                # row 순서: (tourist_spot_id, activity_level, latitude, longitude, name, category)
+                pid = str(row[0])
+                # activity_level을 reviewCount로 사용 (없으면 0)
+                try:
+                    review_count = float(row[1]) if row[1] is not None else 0.0
+                except Exception:
+                    review_count = 0.0
+
+                # 위도/경도: longitude를 x, latitude를 y로 사용
+                try:
+                    x_val = float(row[3]) if row[3] is not None else 0.0
+                    y_val = float(row[2]) if row[2] is not None else 0.0
+                except Exception:
+                    x_val, y_val = 0.0, 0.0
+
+                # 이름 처리: 없으면 기본값
+                name_val = row[4] if row[4] else f"Place_{pid}"
+
+                # category 컬럼: JSON 문자열 또는 일반 문자열일 수 있음
+                cat_data = row[5]
+                if cat_data:
+                    try:
+                        cat = json.loads(cat_data)
+                        if isinstance(cat, str):
+                            cat = [cat]
+                        elif isinstance(cat, dict):
+                            cat = [cat]
+                    except Exception:
+                        # JSON 파싱 실패 시, 단순 문자열로 처리
+                        cat = [cat_data]
+                else:
+                    cat = []
+
+                places_dict[pid] = {
+                    "id": pid,
+                    "name": name_val,
+                    "x": x_val,
+                    "y": y_val,
+                    "reviewCount": review_count,
+                    "category": cat,
+                }
+    finally:
+        connection.close()
+
     return places_dict
 
 
@@ -74,16 +135,24 @@ def compute_distance(a: Dict[str, Any], b: Dict[str, Any]) -> float:
 def build_cost_matrix(places_dict: Dict[str, Any], place_ids: List[str]) -> List[List[float]]:
     n = len(place_ids)
     cost_mat = [[0.0] * n for _ in range(n)]
-    for i in range(n):
-        for j in range(n):
-            if i == j:
-                cost_mat[i][j] = 0.0
-            else:
-                p_i = places_dict[place_ids[i]]
-                p_j = places_dict[place_ids[j]]
-                cost_mat[i][j] = compute_distance(p_i, p_j)
-    return cost_mat
 
+    from concurrent.futures import ThreadPoolExecutor
+
+    def compute_pair(i: int, j: int) -> Tuple[Tuple[int, int], float]:
+        if i == j:
+            return (i, j), 0.0
+        p_i = places_dict[place_ids[i]]
+        p_j = places_dict[place_ids[j]]
+        return (i, j), compute_distance(p_i, p_j)
+
+    # 모든 (i, j) 쌍에 대해 계산을 병렬로 수행
+    pairs = [(i, j) for i in range(n) for j in range(n)]
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        results = list(executor.map(lambda ij: compute_pair(*ij), pairs))
+    for (i, j), dist in results:
+        cost_mat[i][j] = dist
+
+    return cost_mat
 
 def assign_prizes(
         places_dict: Dict[str, Any],
@@ -93,7 +162,6 @@ def assign_prizes(
         cat_keywords: List[str] = None,
         cat_bonus: float = 10.0
 ) -> Tuple[Dict[str, float], Dict[int, Dict[str, float]]]:
-
     base_prize: Dict[str, float] = {}
     priority_prize: Dict[int, Dict[str, float]] = {}
 
@@ -118,41 +186,9 @@ def assign_prizes(
         priority_prize[k] = {}
         for pid in place_ids:
             p_base = base_prize.get(pid, 0.0)
-            # TODO: 현재는 p_ki = p_base * priority_scale / sqrt(k) 수식을 이용중. 추후 변경 가능.
+            # Example formula: p_ki = p_base * priority_scale / sqrt(k)
             priority_prize[k][pid] = p_base * priority_scale / math.sqrt(k)
     return base_prize, priority_prize
-
-
-def get_distance_matrix(nodes: List[Dict[str, Any]]) -> Tuple[List[List[float]], List[List[float]]]:
-    n = len(nodes)
-    dist_matrix = [[0] * n for _ in range(n)]
-    time_matrix = [[0] * n for _ in range(n)]
-    try:
-        coords_str = ";".join([f"{node['x']},{node['y']}" for node in nodes])
-        url = f"http://localhost:5000/table/v1/driving/{coords_str}?annotations=distance,duration"
-        response = requests.get(url, timeout=5)
-        data = response.json()
-        for i in range(n):
-            for j in range(n):
-                dist_matrix[i][j] = data["distances"][i][j] / 1000.0
-                time_matrix[i][j] = data["durations"][i][j] / 3600.0
-
-    except Exception:
-        def fetch(i, j):
-            if i == j:
-                return 0, 0
-            url = (f"http://localhost:5000/route/v1/driving/"
-                   f"{nodes[i]['x']},{nodes[i]['y']};{nodes[j]['x']},{nodes[j]['y']}?overview=false")
-            res = requests.get(url)
-            route = res.json()["routes"][0]
-            return route["distance"] / 1000.0, route["duration"] / 3600.0
-
-        pairs = [(i, j) for i in range(n) for j in range(n)]
-        with ThreadPoolExecutor(max_workers=8) as executor:
-            results = list(executor.map(lambda ij: fetch(*ij), pairs))
-        for idx, (i, j) in enumerate(pairs):
-            dist_matrix[i][j], time_matrix[i][j] = results[idx]
-    return dist_matrix, time_matrix
 
 
 def solve_day_ptppp_milp(
@@ -170,18 +206,19 @@ def solve_day_ptppp_milp(
     if not day_places:
         return [], 0.0, 0.0
 
-    day_places = list(set(day_places))  # 중복 제거
+    # Remove duplicates
+    day_places = list(set(day_places))
     if start_pid not in day_places:
         day_places.append(start_pid)
     if len(day_places) > max_places_per_day:
-        # start_pid를 제외한 나머지를 base_prz 기준으로 정렬 후 상위 선택
+        # Exclude start_pid, sort the rest by base_prz, and keep top
         temp = [pid for pid in day_places if pid != start_pid]
         temp.sort(key=lambda x: base_prz.get(x, 0.0), reverse=True)
         chosen = temp[: (max_places_per_day - 1)]
         day_places = [start_pid] + chosen
 
     place_ids = [start_pid] + [pid for pid in day_places if pid != start_pid]
-    n = len(place_ids) - 1  # 실제 관광지수 (start는 제외)
+    n = len(place_ids) - 1
     K = min(n, max_places_per_day - 1)
 
     idx_to_pid = {0: start_pid}
@@ -210,6 +247,7 @@ def solve_day_ptppp_milp(
         cat=pulp.LpContinuous
     )
 
+    # Objective: Maximize prize - cost
     prize_terms = []
     for i in range(1, n + 1):
         pid = idx_to_pid[i]
@@ -228,6 +266,8 @@ def solve_day_ptppp_milp(
             cost_terms.append(cost_mat[i][j] * X[(i, j)])
 
     prob += pulp.lpSum(prize_terms) - pulp.lpSum(cost_terms), "Max_Prize_minus_Cost"
+
+    # Constraints
     prob += pulp.lpSum([X[(0, j)] for j in range(1, n + 1)]) <= 1, "Start_leaving"
     prob += pulp.lpSum([X[(i, 0)] for i in range(1, n + 1)]) <= 1, "End_return"
 
@@ -245,8 +285,10 @@ def solve_day_ptppp_milp(
         prob += pulp.lpSum([Y[(k, i)] for i in range(1, n + 1)]) <= 1, f"OrderCap_{k}"
 
     for k in range(1, K):
-        prob += pulp.lpSum([Y[(k, i)] for i in range(1, n + 1)]) >= \
-                pulp.lpSum([Y[(k + 1, i)] for i in range(1, n + 1)]), f"NoGap_{k}"
+        prob += (
+                pulp.lpSum([Y[(k, i)] for i in range(1, n + 1)]) >=
+                pulp.lpSum([Y[(k + 1, i)] for i in range(1, n + 1)])
+        ), f"NoGap_{k}"
 
     for i in range(1, n + 1):
         for j in range(1, n + 1):
@@ -278,6 +320,7 @@ def solve_day_ptppp_milp(
     visit_time_terms = []
     for i in range(1, n + 1):
         pid = idx_to_pid[i]
+        # Example: each place visited for 1 hour
         visit_duration = 1.0
         visit_time_terms.append(visit_duration * pulp.lpSum([Y[(k, i)] for k in range(1, K + 1)]))
 
@@ -291,12 +334,14 @@ def solve_day_ptppp_milp(
 
     total_time_expr = pulp.lpSum(visit_time_terms) + pulp.lpSum(travel_time_terms)
     prob += total_time_expr <= daily_max_duration, "DailyMaxDuration"
-    prob += pulp.lpSum([Y[(k, i)] for i in range(1, n + 1) for k in range(1, K + 1)]) <= (
-                max_places_per_day - 1), "MaxPlacesDay"
+    prob += (
+            pulp.lpSum([Y[(k, i)] for i in range(1, n + 1) for k in range(1, K + 1)])
+            <= (max_places_per_day - 1)
+    ), "MaxPlacesDay"
 
     prob.solve(pulp.PULP_CBC_CMD(msg=0))
 
-    if pulp.LpStatus[prob.status] != "Optimal" and pulp.LpStatus[prob.status] != "Feasible":
+    if pulp.LpStatus[prob.status] not in ["Optimal", "Feasible"]:
         return [], 0.0, 0.0
 
     visited_sequence = []
@@ -326,6 +371,10 @@ def solve_day_ptppp_milp(
 
 def calculate_itinerary(request_data: Dict[str, Any],
                         places_json_dir: str = "./app/data/") -> Tuple[List[Dict[str, Any]], float]:
+    """
+    Main function that takes a request_data dict, fetches the relevant tourist_spots from DB,
+    then runs the existing cluster + MILP routine to produce an itinerary.
+    """
     places_field = request_data.get("places")
     if places_field is None:
         raise ValueError("places 필드가 필요합니다.")
@@ -335,12 +384,18 @@ def calculate_itinerary(request_data: Dict[str, Any],
         db_nums = places_field
     else:
         raise ValueError("places 필드는 정수 또는 정수 리스트여야 합니다.")
+
+    # Instead of reading JSON files, fetch from DB:
     places_dict_total: Dict[str, Any] = {}
     for db_num in db_nums:
-        json_path = f"{places_json_dir}{db_num}_관광지.json"
-        partial_places = load_places(json_path)
+        partial_places = load_places_from_db(db_num)
         places_dict_total.update(partial_places)
+    import logging
+    logging.log(logging.DEBUG, f"{places_dict_total}")
+
     if not places_dict_total:
+        import logging
+        logging.log(logging.DEBUG, f"{places_dict_total}")
         raise ValueError("로드된 장소 데이터가 없습니다.")
 
     user_profile = request_data.get("user_profile", {})
@@ -374,6 +429,7 @@ def calculate_itinerary(request_data: Dict[str, Any],
     else:
         speed_kmh = 60.0
 
+    # Assign prizes
     base_prz, prio_prz = assign_prizes(
         places_dict_total, valid_pids,
         base_scale=0.1,
@@ -396,35 +452,26 @@ def calculate_itinerary(request_data: Dict[str, Any],
     for pid, ci in zip(valid_pids, labels):
         clusters[ci].append(pid)
 
-    # 단순히 cluster idx 순서대로 방문한다고 가정
-    # (실제론 cluster 간 순서 최적화 가능하지만 여기서는 생략)
     cluster_sequence = list(range(num_days))
-
     daily_itineraries: List[Dict[str, Any]] = []
     overall_distance = 0.0
 
-    # 3. 각 클러스터(=하루)에 대해 PTPPP 모델로 동선 결정
     for day_idx, cluster_idx in enumerate(cluster_sequence):
         cluster_places = clusters.get(cluster_idx, [])
         if not cluster_places:
             continue
 
-        # start_place 결정
-        # daily_start_points_input[day_idx]에 place ID가 들어있을 수도 있고, 없으면 max base_prz인 곳
         stated_start_pid = daily_start_points_input[day_idx]
         if stated_start_pid and str(stated_start_pid) in places_dict_total:
             start_place = str(stated_start_pid)
-            # 만약 current cluster에 없으면? 일단 추가
             if start_place not in cluster_places:
                 cluster_places.append(start_place)
         else:
-            # base_prz가 가장 큰 곳을 start
+            # Pick the place with the highest base_prz as the start
             start_place = max(cluster_places, key=lambda pid: base_prz.get(pid, 0.0))
 
-        # 이 클러스터에 속한 must_visit 중 start 제외
         cluster_must_visits = [pid for pid in must_visit_input if pid in cluster_places and pid != start_place]
 
-        # MILP 풀기
         route, day_dist, day_dur = solve_day_ptppp_milp(
             places_dict=places_dict_total,
             day_places=cluster_places,
@@ -438,9 +485,6 @@ def calculate_itinerary(request_data: Dict[str, Any],
             transport_speed_kmh=speed_kmh
         )
 
-        # route 예: [start, ..., start]
-        # day_dist, day_dur
-        # route가 비면 그냥 넘어감
         if not route:
             daily_itineraries.append({
                 "day": day_idx + 1,
@@ -450,16 +494,11 @@ def calculate_itinerary(request_data: Dict[str, Any],
             })
             continue
 
-        # 맨 마지막에 start가 붙어있으니(PTPPP), 사용자 요구 포맷에 맞게 조정
-        # "route": [실제로 방문한 node들] => MILP에서는 ID(str)
-        # 사용자는 int로 cast 원하는 듯 -> int(x)
-        # 다만 start는 str. int 변환이 안 되면 int() 실패 => 예시로 start도 int로 변환 가능한지 확인
-        # 실제 데이터에선 id가 str이긴 하지만 숫자면 변환 가능
         def safe_int(x_str):
             try:
                 return int(x_str)
             except:
-                return x_str  # 변환 불가하면 그냥 string 반환
+                return x_str
 
         final_route_ids = [safe_int(x) for x in route]
         daily_itineraries.append({

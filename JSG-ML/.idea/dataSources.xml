@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="DataSourceManagerImpl" format="xml" multifile-model="true">
+    <data-source source="LOCAL" name="jetsetgo@database-1.c9mqk4k2c5v1.ap-northeast-2.rds.amazonaws.com" uuid="284b0271-917e-41e3-b26e-abf4ff644462">
+      <driver-ref>mysql.8</driver-ref>
+      <synchronize>true</synchronize>
+      <jdbc-driver>com.mysql.cj.jdbc.Driver</jdbc-driver>
+      <jdbc-url>jdbc:mysql://database-1.c9mqk4k2c5v1.ap-northeast-2.rds.amazonaws.com:3306/jetsetgo</jdbc-url>
+      <working-dir>$ProjectFileDir$</working-dir>
+    </data-source>
+  </component>
+</project>
