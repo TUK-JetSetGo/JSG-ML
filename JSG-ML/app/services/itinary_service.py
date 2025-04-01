@@ -1,8 +1,27 @@
 import math
 import random
-import statistics
 import json
-from typing import List, Dict, Any, Tuple, Set, Optional
+from typing import List, Dict, Any, Tuple
+
+import requests
+from concurrent.futures import ThreadPoolExecutor
+from sklearn.cluster import KMeans
+
+import pulp
+
+import os
+import pymysql
+from dotenv import load_dotenv
+
+load_dotenv()  # Make sure your .env file is in the same folder or properly referenced
+
+DB_HOST = os.getenv("DB_HOST")
+DB_PORT = int(os.getenv("DB_PORT", "3306"))
+DB_USER = os.getenv("DB_USER")
+DB_PASSWORD = os.getenv("DB_PASSWORD")
+DB_NAME = os.getenv("DB_NAME")
+
+
 
 
 def load_places(json_path: str) -> Dict[str, Any]:
@@ -29,9 +48,27 @@ def load_places(json_path: str) -> Dict[str, Any]:
 
 
 def compute_distance(a: Dict[str, Any], b: Dict[str, Any]) -> float:
-    dx = a["x"] - b["x"]
-    dy = a["y"] - b["y"]
-    return math.sqrt(dx * dx + dy * dy)
+    lon1, lat1 = a["x"], a["y"]
+    lon2, lat2 = b["x"], b["y"]
+    distance = None
+    try:
+        url = f"http://router.project-osrm.org/route/v1/driving/{lon1},{lat1};{lon2},{lat2}?overview=false"
+        resp = requests.get(url, timeout=5)
+        if resp.status_code == 200:
+            data = resp.json()
+            if data.get("routes"):
+                distance_m = data["routes"][0]["distance"]
+                distance = distance_m / 1000.0  # meters to kilometers
+    except Exception:
+        distance = None
+    if distance is None:
+        rad = math.pi / 180.0
+        dlat = (lat2 - lat1) * rad
+        dlon = (lon2 - lon1) * rad
+        a_c = math.sin(dlat / 2) ** 2 + math.cos(lat1 * rad) * math.cos(lat2 * rad) * math.sin(dlon / 2) ** 2
+        c = 2 * math.atan2(math.sqrt(a_c), math.sqrt(1 - a_c))
+        distance = 6371.0 * c
+    return distance
 
 
 def build_cost_matrix(places_dict: Dict[str, Any], place_ids: List[str]) -> List[List[float]]:
@@ -56,12 +93,9 @@ def assign_prizes(
         cat_keywords: List[str] = None,
         cat_bonus: float = 10.0
 ) -> Tuple[Dict[str, float], Dict[int, Dict[str, float]]]:
-    """
-    장소별 점수(base_prize)와 방문 순서별 보너스(priority_prize) 부여
-    예: 리뷰 수 * base_scale + (카테고리 매칭 시 cat_bonus), 방문 순서별 sqrt 감쇠
-    """
-    base_prize = {}
-    priority_prize = {}
+
+    base_prize: Dict[str, float] = {}
+    priority_prize: Dict[int, Dict[str, float]] = {}
 
     for pid in place_ids:
         info = places_dict[pid]
@@ -78,551 +112,220 @@ def assign_prizes(
         base_val = rc * base_scale
         if cat_match:
             base_val += cat_bonus
-
         base_prize[pid] = base_val
 
     for k in range(1, len(place_ids) + 1):
         priority_prize[k] = {}
         for pid in place_ids:
-            p_base = base_prize[pid]
+            p_base = base_prize.get(pid, 0.0)
+            # TODO: 현재는 p_ki = p_base * priority_scale / sqrt(k) 수식을 이용중. 추후 변경 가능.
             priority_prize[k][pid] = p_base * priority_scale / math.sqrt(k)
-
     return base_prize, priority_prize
 
 
-def calc_profit(
-        route: List[str],
-        place_ids: List[str],
-        cost_matrix: List[List[float]],
-        base_prize: Dict[str, float],
-        priority_prize: Dict[int, Dict[str, float]],
-        distance_weight: float = 1.0
-) -> float:
-    """
-    경로 점수(방문지 점수 - 이동 거리 비용) 계산
-    :param route: 방문 순서대로된 place id 리스트
-    :param place_ids: 탐색 대상이 되는 모든 place id 리스트
-    :param cost_matrix: i->j 이동 비용(거리) 2차원 배열
-    :param base_prize: {place_id: 기본 보상} 맵
-    :param priority_prize: {순서 k: {place_id: 우선순위 보너스}} 맵
-    :param distance_weight: 이동 비용 가중치
-    :return: route의 총 점수
-    """
-    if len(route) < 2:
-        return 0.0
+def get_distance_matrix(nodes: List[Dict[str, Any]]) -> Tuple[List[List[float]], List[List[float]]]:
+    n = len(nodes)
+    dist_matrix = [[0] * n for _ in range(n)]
+    time_matrix = [[0] * n for _ in range(n)]
+    try:
+        coords_str = ";".join([f"{node['x']},{node['y']}" for node in nodes])
+        url = f"http://localhost:5000/table/v1/driving/{coords_str}?annotations=distance,duration"
+        response = requests.get(url, timeout=5)
+        data = response.json()
+        for i in range(n):
+            for j in range(n):
+                dist_matrix[i][j] = data["distances"][i][j] / 1000.0
+                time_matrix[i][j] = data["durations"][i][j] / 3600.0
 
-    # -------------------------------
-    # 이동 비용 계산
-    # -------------------------------
-    total_cost = 0.0
-    for i in range(len(route) - 1):
-        idx_i = place_ids.index(route[i])
-        idx_j = place_ids.index(route[i + 1])
-        total_cost += cost_matrix[idx_i][idx_j]
+    except Exception:
+        def fetch(i, j):
+            if i == j:
+                return 0, 0
+            url = (f"http://localhost:5000/route/v1/driving/"
+                   f"{nodes[i]['x']},{nodes[i]['y']};{nodes[j]['x']},{nodes[j]['y']}?overview=false")
+            res = requests.get(url)
+            route = res.json()["routes"][0]
+            return route["distance"] / 1000.0, route["duration"] / 3600.0
 
-    # -------------------------------
-    # (※ 중요) 방문 보상 + 우선순위 보상 계산
-    # -------------------------------
-    total_prize = 0.0
-    for k, pid in enumerate(route):
-        order = k + 1
-        # ---- (수정 필요) 방문하면 무조건 base_prize 반영
-        total_prize += base_prize.get(pid, 0.0)
-
-        # ---- (수정 필요) 우선순위 만족 시 추가로 priority_prize
-        if order in priority_prize:
-            # priority_prize[order]는 {place_id: val} 형태
-            total_prize += priority_prize[order].get(pid, 0.0)
-
-    # -------------------------------
-    # 최종 계산: (방문 보상 합계 + 우선순위 보너스) - 이동 비용
-    # -------------------------------
-    return total_prize - distance_weight * total_cost
+        pairs = [(i, j) for i in range(n) for j in range(n)]
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            results = list(executor.map(lambda ij: fetch(*ij), pairs))
+        for idx, (i, j) in enumerate(pairs):
+            dist_matrix[i][j], time_matrix[i][j] = results[idx]
+    return dist_matrix, time_matrix
 
 
-# ----------------------------------------------------------
-# Tabu Search 관련 함수
-
-def two_opt(route: List[str], fixed_count: int) -> List[str]:
-    if len(route) <= fixed_count + 2:
-        return route[:]
-    var_start = fixed_count + 1
-    var_end = len(route) - 2
-    if var_start >= var_end:
-        return route[:]
-    i = random.randint(var_start, var_end - 1)
-    j = random.randint(i + 1, var_end)
-    new_route = route[:]
-    new_route[i:j + 1] = reversed(new_route[i:j + 1])
-    return new_route
-
-
-def pairwise_swap(route: List[str], fixed_count: int) -> List[str]:
-    if len(route) <= fixed_count + 2:
-        return route[:]
-    var_idx = list(range(fixed_count + 1, len(route) - 1))
-    if len(var_idx) < 2:
-        return route[:]
-    i, j = random.sample(var_idx, 2)
-    new_route = route[:]
-    new_route[i], new_route[j] = new_route[j], new_route[i]
-    return new_route
-
-
-def remove_node(route: List[str], fixed_count: int) -> Tuple[List[str], Optional[str]]:
-    if len(route) <= fixed_count + 2:
-        return route[:], None
-    var_idx = list(range(fixed_count + 1, len(route) - 1))
-    rm_idx = random.choice(var_idx)
-    removed_node = route[rm_idx]
-    new_route = route[:rm_idx] + route[rm_idx + 1:]
-    return new_route, removed_node
-
-
-def reinsert_node(route: List[str], unvisited: List[str], fixed_count: int) -> List[str]:
-    inside = set(route[fixed_count + 1:-1])
-    candidates = [n for n in unvisited if n not in inside]
-    if not candidates:
-        return route[:]
-    node = random.choice(candidates)
-    pos = random.randint(fixed_count + 1, len(route) - 1)
-    new_route = route[:]
-    new_route.insert(pos, node)
-    return new_route
-
-
-def get_neighbors(route: List[str],
-                  unvisited: List[str],
-                  fixed_count: int) -> Tuple[List[List[str]], Optional[str]]:
-    nbrs = []
-    t2 = two_opt(route, fixed_count)
-    pswap = pairwise_swap(route, fixed_count)
-    rnode, removed = remove_node(route, fixed_count)
-    rinsert = reinsert_node(route, unvisited, fixed_count)
-    nbrs.extend([t2, pswap, rnode, rinsert])
-    return nbrs, removed
-
-
-def check_daily_constraints(
-        route: List[str],
-        valid_pids: List[str],
-        cost_matrix: List[List[float]],
-        num_days: int,
-        daily_limit: int,
-        daily_max_distance: float,
-        daily_max_duration: float
-) -> bool:
-    """
-    route (start->...->start)를
-    '연속형'으로 day1, day2, ... dayN을 순차 분할하되,
-    하루에 최대 daily_limit 개의 장소를 배정.
-
-    각 일자의 이동거리와 소요시간이 daily_max_* 이하인지 검사.
-    초과 시 False, 모두 만족하면 True.
-    """
-    if num_days < 1 or daily_limit < 1:
-        return True  # 혹은 False, 상황에 맞게
-
-    # route[0], route[-1] = 동일 노드
-    inner = route[1:-1]
-    route_len = len(inner)
-
-    curr_index = 0
-    current_start = route[0]
-
-    for d in range(num_days):
-        # 하루에 최대 daily_limit 방문
-        next_idx = curr_index + daily_limit
-        if next_idx > route_len:
-            next_idx = route_len
-
-        today_inner = inner[curr_index:next_idx]
-        curr_index = next_idx
-
-        day_route = [current_start] + today_inner
-
-        if d == num_days - 1:
-            # 마지막 날이면 나머지 전부 + route[-1]
-            day_route.append(route[-1])
-        else:
-            # 오늘 마지막 방문지가 내일 시작
-            if today_inner:
-                current_start = today_inner[-1]
-            else:
-                # 방문지가 없는 경우 -> start_node 그대로
-                current_start = current_start
-
-        # 이동거리/시간 계산
-        dist = 0.0
-        for i in range(len(day_route) - 1):
-            idx1 = valid_pids.index(day_route[i])
-            idx2 = valid_pids.index(day_route[i + 1])
-            dist += cost_matrix[idx1][idx2]
-
-        # 예: 1km당 0.15h => 9분
-        travel_time = dist * 0.15
-        stay_time = (len(day_route) - 1) * 1.0
-        day_duration = travel_time + stay_time
-
-        # 제약 검사
-        if dist > daily_max_distance:
-            return False
-        if day_duration > daily_max_duration:
-            return False
-
-    return True
-
-
-def is_valid_route(
-        route: List[str],
-        start_node: str,
-        must_visit: List[str],
-        max_visit: int,  # 내부 방문지 최대치
-        daily_start_points: List[int],
-        num_days: int,
-        daily_limit: int,
+def solve_day_ptppp_milp(
+        places_dict: Dict[str, Any],
+        day_places: List[str],
+        start_pid: str,
         daily_max_distance: float,
         daily_max_duration: float,
-        valid_pids: List[str],
-        cost_matrix: List[List[float]]
-) -> bool:
-    """
-    1) 경로 시작/끝 start_node 동일
-    2) 내부 방문지 <= max_visit
-    3) must_visit 모두 포함
-    4) 앵커 순서
-    5) 일자별 daily_limit, daily_max_distance/duration 충족(check_daily_constraints)
-    """
-    if len(route) < 2:
-        return False
-    if route[0] != start_node or route[-1] != start_node:
-        return False
+        max_places_per_day: int,
+        base_prz: Dict[str, float],
+        prio_prz: Dict[int, Dict[str, float]],
+        must_visit_ids: List[str],
+        transport_speed_kmh: float = 40.0,
+) -> Tuple[List[str], float, float]:
+    if not day_places:
+        return [], 0.0, 0.0
 
-    inner = route[1:-1]
-    # 중복 방문X
-    if len(inner) != len(set(inner)):
-        return False
-    # 최대 방문 제한
-    if len(inner) > max_visit:
-        return False
+    day_places = list(set(day_places))  # 중복 제거
+    if start_pid not in day_places:
+        day_places.append(start_pid)
+    if len(day_places) > max_places_per_day:
+        # start_pid를 제외한 나머지를 base_prz 기준으로 정렬 후 상위 선택
+        temp = [pid for pid in day_places if pid != start_pid]
+        temp.sort(key=lambda x: base_prz.get(x, 0.0), reverse=True)
+        chosen = temp[: (max_places_per_day - 1)]
+        day_places = [start_pid] + chosen
 
-    # 필수 방문지 포함
-    for mv in must_visit:
-        if mv not in inner:
-            return False
+    place_ids = [start_pid] + [pid for pid in day_places if pid != start_pid]
+    n = len(place_ids) - 1  # 실제 관광지수 (start는 제외)
+    K = min(n, max_places_per_day - 1)
 
-    # 앵커 검증(기존 로직)
-    if daily_start_points:
-        anchor_ids = [str(x) for x in daily_start_points if x is not None]
-        if len(anchor_ids) > 1:
-            positions = {}
-            for anc in anchor_ids:
-                try:
-                    positions[anc] = route.index(anc)
-                except ValueError:
-                    return False
-            # 첫 앵커는 route[0]이어야 함
-            if positions.get(anchor_ids[0], None) != 0:
-                return False
-            # 순서 체크
-            for j in range(1, len(anchor_ids)):
-                prev_anchor = anchor_ids[j - 1]
-                curr_anchor = anchor_ids[j]
-                if positions[prev_anchor] >= positions[curr_anchor]:
-                    return False
+    idx_to_pid = {0: start_pid}
+    for i, pid in enumerate(place_ids[1:], start=1):
+        idx_to_pid[i] = pid
+    pid_to_idx = {v: k for k, v in idx_to_pid.items()}
+    coords_list = place_ids
+    cost_mat = build_cost_matrix(places_dict, coords_list)
 
-    # 마지막: 일자별 거리/시간 제약
-    if not check_daily_constraints(
-            route, valid_pids, cost_matrix,
-            num_days, daily_limit,
-            daily_max_distance, daily_max_duration
-    ):
-        return False
+    prob = pulp.LpProblem(f"PTPPP_Day", pulp.LpMaximize)
 
-    return True
+    X = pulp.LpVariable.dicts(
+        "X",
+        [(i, j) for i in range(len(place_ids)) for j in range(len(place_ids))],
+        cat=pulp.LpBinary
+    )
+    Y = pulp.LpVariable.dicts(
+        "Y",
+        [(k, i) for k in range(1, K + 1) for i in range(1, n + 1)],
+        cat=pulp.LpBinary
+    )
+    Z = pulp.LpVariable.dicts(
+        "Z",
+        [i for i in range(1, n + 1)],
+        lowBound=0,
+        cat=pulp.LpContinuous
+    )
 
+    prize_terms = []
+    for i in range(1, n + 1):
+        pid = idx_to_pid[i]
+        base_val = base_prz.get(pid, 0.0)
+        base_expr = base_val * pulp.lpSum([Y[k, i] for k in range(1, K + 1)])
+        prize_terms.append(base_expr)
+        for k in range(1, K + 1):
+            prio_val = prio_prz.get(k, {}).get(pid, 0.0)
+            prize_terms.append(prio_val * Y[k, i])
 
-def advanced_tabu_search(
-        place_ids: List[str],
-        cost_matrix: List[List[float]],
-        base_prize: Dict[str, float],
-        priority_prize: Dict[int, Dict[str, float]],
-        start_node: str,
-        must_visit: List[str],
-        max_visit: int,  # 전체 내부 방문지 최대치
-        daily_start_points: List[int],
-        num_days: int,
-        daily_limit: int,
-        daily_max_distance: float,
-        daily_max_duration: float,
-        valid_pids: List[str],
-        max_iter: int = 50,
-        hmin: int = 5,
-        hmax: int = 10
-) -> Tuple[List[str], float]:
-    """
-    Tabu Search 함수:
-      - is_valid_route(...) 내에서 check_daily_constraints(...) 호출하여
-        일자별 거리/시간 제약을 검사
-      - calc_profit(...)에서 priority_prize를 실제 반영
-    """
-
-    # 1) must_visit 정리
-    seen = set()
-    must_visit_list = []
-
-    for m in must_visit:
-        if m != start_node and m not in seen:
-            must_visit_list.append(m)
-            seen.add(m)
-
-    # 필수 방문지가 max_visit보다 많으면 불가능
-    if len(must_visit_list) > max_visit:
-        raise ValueError("필수 방문지 > max_visit")
-
-    # 나머지 후보
-    others = [p for p in place_ids if p not in set(must_visit_list) and p != start_node]
-
-    # 2) 초기 해 구성
-    init_route = None
-    attempts = 100
-    while attempts > 0 and init_route is None:
-        route_candidate = [start_node] + must_visit_list[:]
-
-        # 0 ~ (max_visit - len(must_visit_list))개 추가
-        can_add = max_visit - len(must_visit_list)
-        if can_add > 0 and len(others) > 0:
-            add_cnt = random.randint(0, min(can_add, len(others)))
-            add_nodes = random.sample(others, add_cnt)
-        else:
-            add_nodes = []
-
-        route_candidate += add_nodes
-        route_candidate.append(start_node)
-
-        # 유효성 검사
-        if is_valid_route(
-                route_candidate,
-                start_node,
-                must_visit_list,
-                max_visit,
-                daily_start_points,
-                num_days,
-                daily_limit,
-                daily_max_distance,
-                daily_max_duration,
-                valid_pids,
-                cost_matrix
-        ):
-            init_route = route_candidate
-        attempts -= 1
-
-    if init_route is None:
-        raise RuntimeError("초기 해 구성 실패 (제약 과도)")
-
-    # 3) Tabu Search 시작
-    current_route = init_route[:]
-    best_route = current_route[:]
-    best_score = -float("inf")
-
-    # calc_profit에서 priority_prize 사용 (방문 순서별 보너스)
-    def calc_profit(route: List[str]) -> float:
-        distance_weight = 1.0  # 필요 시 가중치 조정 가능
-        # 이동 거리 합
-        total_cost = 0.0
-        for i in range(len(route) - 1):
-            idx_i = place_ids.index(route[i])
-            idx_j = place_ids.index(route[i + 1])
-            total_cost += cost_matrix[idx_i][idx_j]
-
-        # 방문지 점수 + 우선순위 보너스
-        total_prize = 0.0
-        for k, pid in enumerate(route):
-            order = k + 1
-            # 기본 점수
-            total_prize += base_prize.get(pid, 0.0)
-            # priority_prize가 존재하면 추가
-            if order in priority_prize:
-                total_prize += priority_prize[order].get(pid, 0.0)
-
-        return total_prize - distance_weight * total_cost
-
-    best_score = calc_profit(best_route)
-
-    fixed_count = len(must_visit_list)
-    tabu_list = []
-    TABU_CAPA = 8
-
-    stage_length = random.randint(hmin, hmax)
-    stage_iter_count = 0
-    iteration = 0
-    stage_scores: List[float] = []
-    prev_stage_mean = None
-    unvisited: Set[str] = set()
-
-    while iteration < max_iter:
-        iteration += 1
-        stage_iter_count += 1
-
-        # 이웃 생성
-        neighbors, removed_node = get_neighbors(current_route, list(unvisited), fixed_count)
-        best_neighbor_route = None
-        best_neighbor_score = -float("inf")
-
-        for nbr in neighbors:
-            # 유효성 (일자별 제약 등)
-            if not is_valid_route(
-                    nbr,
-                    start_node,
-                    must_visit_list,
-                    max_visit,
-                    daily_start_points,
-                    num_days,
-                    daily_limit,
-                    daily_max_distance,
-                    daily_max_duration,
-                    valid_pids,
-                    cost_matrix
-            ):
+    cost_terms = []
+    for i in range(len(place_ids)):
+        for j in range(len(place_ids)):
+            if i == j:
                 continue
+            cost_terms.append(cost_mat[i][j] * X[(i, j)])
 
-            route_key = tuple(nbr)
-            sc_nbr = calc_profit(nbr)
+    prob += pulp.lpSum(prize_terms) - pulp.lpSum(cost_terms), "Max_Prize_minus_Cost"
+    prob += pulp.lpSum([X[(0, j)] for j in range(1, n + 1)]) <= 1, "Start_leaving"
+    prob += pulp.lpSum([X[(i, 0)] for i in range(1, n + 1)]) <= 1, "End_return"
 
-            # 금기(tabu) 검사
-            if route_key in tabu_list and sc_nbr <= best_score:
+    for i in range(1, n + 1):
+        inbound = pulp.lpSum([X[(h, i)] for h in range(n + 1) if h != i])
+        outbound = pulp.lpSum([X[(i, h)] for h in range(n + 1) if h != i])
+        visited = pulp.lpSum([Y[(k, i)] for k in range(1, K + 1)])
+        prob += inbound == visited, f"InboundNode_{i}"
+        prob += outbound == visited, f"OutboundNode_{i}"
+
+    for i in range(1, n + 1):
+        prob += pulp.lpSum([Y[(k, i)] for k in range(1, K + 1)]) <= 1, f"OneOrder_{i}"
+
+    for k in range(1, K + 1):
+        prob += pulp.lpSum([Y[(k, i)] for i in range(1, n + 1)]) <= 1, f"OrderCap_{k}"
+
+    for k in range(1, K):
+        prob += pulp.lpSum([Y[(k, i)] for i in range(1, n + 1)]) >= \
+                pulp.lpSum([Y[(k + 1, i)] for i in range(1, n + 1)]), f"NoGap_{k}"
+
+    for i in range(1, n + 1):
+        for j in range(1, n + 1):
+            if i == j:
                 continue
+            for k in range(2, K + 1):
+                prob += X[(i, j)] >= Y[(k - 1, i)] + Y[(k, j)] - 1, f"Link_{i}_{j}_k{k}"
 
-            # 더 나은 후보인지 갱신
-            if sc_nbr > best_neighbor_score:
-                best_neighbor_score = sc_nbr
-                best_neighbor_route = nbr
+    for i in range(1, n + 1):
+        for j in range(1, n + 1):
+            if i == j:
+                continue
+            prob += Z[i] - Z[j] + (n + 1) * X[(i, j)] <= n, f"Subtour_{i}_{j}"
 
-        # 이웃 중 valid를 못 찾으면 fallback
-        if best_neighbor_route is None:
-            fallback_route = two_opt(current_route, fixed_count)
-            if is_valid_route(
-                    fallback_route,
-                    start_node,
-                    must_visit_list,
-                    max_visit,
-                    daily_start_points,
-                    num_days,
-                    daily_limit,
-                    daily_max_distance,
-                    daily_max_duration,
-                    valid_pids,
-                    cost_matrix
-            ):
-                best_neighbor_route = fallback_route
-                best_neighbor_score = calc_profit(fallback_route)
-            else:
-                # 더 이상 진행 불가 -> 중단
-                break
+    for mv in must_visit_ids:
+        if mv in pid_to_idx:
+            i_idx = pid_to_idx[mv]
+            if i_idx != 0:
+                prob += pulp.lpSum([Y[(k, i_idx)] for k in range(1, K + 1)]) == 1, f"MustVisit_{mv}"
 
-        current_route = best_neighbor_route[:]
-        tabu_list.append(tuple(current_route))
-        if len(tabu_list) > TABU_CAPA:
-            tabu_list.pop(0)
+    distance_expr = pulp.lpSum([
+        cost_mat[i][j] * X[(i, j)]
+        for i in range(n + 1)
+        for j in range(n + 1)
+        if i != j
+    ])
+    prob += distance_expr <= daily_max_distance, "DailyMaxDistance"
 
-        if best_neighbor_score > best_score:
-            best_score = best_neighbor_score
-            best_route = best_neighbor_route[:]
+    visit_time_terms = []
+    for i in range(1, n + 1):
+        pid = idx_to_pid[i]
+        visit_duration = 1.0
+        visit_time_terms.append(visit_duration * pulp.lpSum([Y[(k, i)] for k in range(1, K + 1)]))
 
-        stage_scores.append(best_neighbor_score)
-        if stage_iter_count >= stage_length:
-            curr_mean = statistics.mean(stage_scores)
-            # 정체(stagnation) 판단
-            if prev_stage_mean is not None and (curr_mean - prev_stage_mean) < 1e-6:
-                tabu_list.clear()
-            stage_iter_count = 0
-            stage_length = random.randint(hmin, hmax)
-            stage_scores = []
-            prev_stage_mean = curr_mean
+    travel_time_terms = []
+    for i in range(n + 1):
+        for j in range(n + 1):
+            if i == j:
+                continue
+            dist_ij = cost_mat[i][j]
+            travel_time_terms.append((dist_ij / transport_speed_kmh) * X[(i, j)])
 
-    return best_route, best_score
+    total_time_expr = pulp.lpSum(visit_time_terms) + pulp.lpSum(travel_time_terms)
+    prob += total_time_expr <= daily_max_duration, "DailyMaxDuration"
+    prob += pulp.lpSum([Y[(k, i)] for i in range(1, n + 1) for k in range(1, K + 1)]) <= (
+                max_places_per_day - 1), "MaxPlacesDay"
 
+    prob.solve(pulp.PULP_CBC_CMD(msg=0))
 
-def post_process_daily_route_continuous(
-        best_overall_route: List[str],
-        num_days: int,
-        valid_pids: List[str],
-        cost_matrix: List[List[float]],
-        best_daily_limit: int,
-        daily_max_distance: Optional[float] = 50,
-        daily_max_duration: Optional[float] = 100
-) -> Tuple[List[Dict[str, Any]], float]:
-    overall_distance = 0.0
-    for i in range(len(best_overall_route) - 1):
-        idx_i = valid_pids.index(best_overall_route[i])
-        idx_j = valid_pids.index(best_overall_route[i + 1])
-        overall_distance += cost_matrix[idx_i][idx_j]
+    if pulp.LpStatus[prob.status] != "Optimal" and pulp.LpStatus[prob.status] != "Feasible":
+        return [], 0.0, 0.0
 
-    inner_route = best_overall_route[1:-1]
-    route_len = len(inner_route)
+    visited_sequence = []
+    for k in range(1, K + 1):
+        for i in range(1, n + 1):
+            val = pulp.value(Y[(k, i)])
+            if val and val > 0.5:
+                visited_sequence.append(idx_to_pid[i])
 
-    daily_itineraries = []
-    curr_index = 0
-    current_start_node = best_overall_route[0]
+    full_route = [start_pid] + visited_sequence + [start_pid]
 
-    for day in range(num_days):
-        real_end_index = curr_index + best_daily_limit
-        if real_end_index > route_len:
-            real_end_index = route_len
+    total_dist = 0.0
+    for i in range(len(full_route) - 1):
+        pidA = full_route[i]
+        pidB = full_route[i + 1]
+        idxA = pid_to_idx[pidA]
+        idxB = pid_to_idx[pidB]
+        dist_ab = cost_mat[idxA][idxB]
+        total_dist += dist_ab
 
-        day_inner_part = inner_route[curr_index:real_end_index]
-        curr_index = real_end_index
+    total_travel_time = total_dist / transport_speed_kmh
+    total_visit_time = len(visited_sequence) * 1.0
+    total_dur = total_travel_time + total_visit_time
 
-        day_route = [current_start_node] + day_inner_part
-
-        if day == num_days - 1:
-            day_route.append(best_overall_route[-1])
-        else:
-            if day_inner_part:
-                next_start_node = day_inner_part[-1]
-            else:
-                next_start_node = current_start_node
-            current_start_node = next_start_node
-
-        daily_distance = 0.0
-        for k in range(len(day_route) - 1):
-            idx1 = valid_pids.index(day_route[k])
-            idx2 = valid_pids.index(day_route[k + 1])
-            daily_distance += cost_matrix[idx1][idx2]
-
-        travel_time = daily_distance * 0.15
-        visit_time = (len(day_route) - 1) * 1.0
-        daily_duration = travel_time + visit_time
-
-        penalty = 0.0
-        if daily_max_distance is not None and daily_distance > daily_max_distance:
-            penalty += (daily_distance - daily_max_distance) * 10.0
-        if daily_max_duration is not None and daily_duration > daily_max_duration:
-            penalty += (daily_duration - daily_max_duration) * 10.0
-
-        daily_duration_with_penalty = daily_duration + penalty
-
-        daily_itineraries.append({
-            "day": day + 1,
-            "route": [int(x) for x in day_route],
-            "daily_distance": round(daily_distance, 2),
-            "daily_duration": round(daily_duration_with_penalty, 2),
-            "used_daily_limit": best_daily_limit
-        })
-
-    return daily_itineraries, overall_distance
+    return full_route, total_dist, total_dur
 
 
 def calculate_itinerary(request_data: Dict[str, Any],
                         places_json_dir: str = "./app/data/") -> Tuple[List[Dict[str, Any]], float]:
-    """
-    - 방문하기 싫은 장소(not_visit_list) 제외
-    - must_visit_list + anchor 반영
-    - 하루 max_places_per_day <= m
-    - 각 일자 방문지는 m개 이하 (즉, 전체 방문 <= m*num_days)
-    - Tabu Search로 경로 생성 후, 일자별 연속형 분할
-    """
-    # 1) load places
     places_field = request_data.get("places")
     if places_field is None:
         raise ValueError("places 필드가 필요합니다.")
@@ -632,13 +335,11 @@ def calculate_itinerary(request_data: Dict[str, Any],
         db_nums = places_field
     else:
         raise ValueError("places 필드는 정수 또는 정수 리스트여야 합니다.")
-
     places_dict_total: Dict[str, Any] = {}
     for db_num in db_nums:
         json_path = f"{places_json_dir}{db_num}_관광지.json"
         partial_places = load_places(json_path)
         places_dict_total.update(partial_places)
-
     if not places_dict_total:
         raise ValueError("로드된 장소 데이터가 없습니다.")
 
@@ -646,104 +347,128 @@ def calculate_itinerary(request_data: Dict[str, Any],
     themes = user_profile.get("themes", [])
     must_visit_input = [str(x) for x in user_profile.get("must_visit_list", [])]
     not_visit_input = [str(x) for x in user_profile.get("not_visit_list", [])]
+    if set(must_visit_input).intersection(not_visit_input):
+        raise ValueError("must_visit과 not_visit 리스트에 중복된 항목이 있습니다.")
 
-    # not_visit_list 반영
     valid_pids_all = list(places_dict_total.keys())
     valid_pids = [pid for pid in valid_pids_all if pid not in not_visit_input]
-
-    # must_visit과 not_visit 겹치면 에러
-    overlap = set(must_visit_input).intersection(set(not_visit_input))
-    if overlap:
-        raise ValueError(f"must_visit과 not_visit이 겹칩니다: {overlap}")
-
-    # build cost matrix
-    cost_matrix = build_cost_matrix(places_dict_total, valid_pids)
 
     num_days = request_data.get("num_days")
     max_places_per_day = request_data.get("max_places_per_day")
     daily_start_points_input = request_data.get("daily_start_points", [])
-
     if num_days is None or max_places_per_day is None or not isinstance(daily_start_points_input, list):
         raise ValueError("num_days, max_places_per_day, daily_start_points가 필요합니다.")
-
-    # anchor
     if len(daily_start_points_input) < num_days:
         daily_start_points_input += [None] * (num_days - len(daily_start_points_input))
     else:
         daily_start_points_input = daily_start_points_input[:num_days]
 
-    if daily_start_points_input[0] is None:
-        overall_start = valid_pids[0]
+    daily_max_distance = request_data.get("daily_max_distance", 99999)
+    daily_max_duration = request_data.get("daily_max_duration", 99999)
+
+    preferred_transport = user_profile.get("preferred_transport", "car")
+    if preferred_transport == "walk":
+        speed_kmh = 5.0
+    elif preferred_transport == "public_transport":
+        speed_kmh = 20.0
     else:
-        overall_start = str(daily_start_points_input[0])
+        speed_kmh = 60.0
 
-    # must_visit + anchor
-    additional_anchors = [str(x) for x in daily_start_points_input[1:] if x is not None]
-    combined_must_visit = must_visit_input[:]
-    for anc in additional_anchors:
-        if anc not in combined_must_visit:
-            combined_must_visit.append(anc)
-
-    # assign prize
     base_prz, prio_prz = assign_prizes(
         places_dict_total, valid_pids,
-        base_scale=0.1, priority_scale=2,
-        cat_keywords=themes, cat_bonus=100.0
+        base_scale=0.1,
+        priority_scale=2.0,
+        cat_keywords=themes,
+        cat_bonus=100.0
     )
 
-    best_overall_route = None
-    best_overall_score = -float("inf")
-    best_daily_limit = None
+    coords = [(places_dict_total[pid]["x"], places_dict_total[pid]["y"]) for pid in valid_pids]
+    if not coords:
+        return [], 0.0
 
-    # daily_limit from 1 to max_places_per_day
-    for daily_limit in range(1, max_places_per_day + 1):
-        # max total: daily_limit * num_days
-        max_total_visit = daily_limit * num_days
-        try:
-            route_candidate, score_candidate = advanced_tabu_search(
-                place_ids=valid_pids,
-                cost_matrix=cost_matrix,
-                base_prize=base_prz,
-                priority_prize=prio_prz,
-                start_node=overall_start,
-                must_visit=combined_must_visit,
-                max_visit=max_total_visit,  # 내부 방문지 최대치
-                daily_start_points=daily_start_points_input,
-                num_days=num_days,  # 추가: 요청 데이터에서 가져온 num_days
-                daily_limit=max_places_per_day,  # 추가: 하루 최대 방문지 수
-                daily_max_distance=request_data.get("daily_max_distance", 5.0),  # 추가: 요청 데이터의 일일 최대 거리
-                daily_max_duration=request_data.get("daily_max_duration", 10.0),  # 추가: 요청 데이터의 일일 최대 시간
-                valid_pids=valid_pids,  # 추가: 유효한 place id 리스트
-                max_iter=request_data.get("max_iter", 50)
-            )
-            import logging
-            logging.log(logging.DEBUG, f"{route_candidate}, {score_candidate}")
+    random.seed(42)
+    chosen_indices = random.sample(range(len(coords)), num_days)
+    centers = [coords[i] for i in chosen_indices]
+    kmeans = KMeans(n_clusters=num_days, init=centers, n_init=1, random_state=42)
+    labels = kmeans.fit_predict(coords)
 
-            if score_candidate > best_overall_score:
-                best_overall_score = score_candidate
-                best_overall_route = route_candidate
-                best_daily_limit = daily_limit
-        except Exception as e:
-            import logging
-            logging.log(logging.DEBUG, f"{e}")
+    clusters: Dict[int, List[str]] = {i: [] for i in range(num_days)}
+    for pid, ci in zip(valid_pids, labels):
+        clusters[ci].append(pid)
 
+    # 단순히 cluster idx 순서대로 방문한다고 가정
+    # (실제론 cluster 간 순서 최적화 가능하지만 여기서는 생략)
+    cluster_sequence = list(range(num_days))
+
+    daily_itineraries: List[Dict[str, Any]] = []
+    overall_distance = 0.0
+
+    # 3. 각 클러스터(=하루)에 대해 PTPPP 모델로 동선 결정
+    for day_idx, cluster_idx in enumerate(cluster_sequence):
+        cluster_places = clusters.get(cluster_idx, [])
+        if not cluster_places:
             continue
 
-    if best_overall_route is None:
-        raise RuntimeError("전체 최적 해를 찾지 못했습니다.")
+        # start_place 결정
+        # daily_start_points_input[day_idx]에 place ID가 들어있을 수도 있고, 없으면 max base_prz인 곳
+        stated_start_pid = daily_start_points_input[day_idx]
+        if stated_start_pid and str(stated_start_pid) in places_dict_total:
+            start_place = str(stated_start_pid)
+            # 만약 current cluster에 없으면? 일단 추가
+            if start_place not in cluster_places:
+                cluster_places.append(start_place)
+        else:
+            # base_prz가 가장 큰 곳을 start
+            start_place = max(cluster_places, key=lambda pid: base_prz.get(pid, 0.0))
 
-    # 일자별로 분할 (연속형)
-    daily_max_distance = request_data.get("daily_max_distance", None)
-    daily_max_duration = request_data.get("daily_max_duration", None)
+        # 이 클러스터에 속한 must_visit 중 start 제외
+        cluster_must_visits = [pid for pid in must_visit_input if pid in cluster_places and pid != start_place]
 
-    daily_itineraries, overall_distance = post_process_daily_route_continuous(
-        best_overall_route,
-        num_days,
-        valid_pids,
-        cost_matrix,
-        best_daily_limit,
-        daily_max_distance,
-        daily_max_duration
-    )
+        # MILP 풀기
+        route, day_dist, day_dur = solve_day_ptppp_milp(
+            places_dict=places_dict_total,
+            day_places=cluster_places,
+            start_pid=start_place,
+            daily_max_distance=daily_max_distance,
+            daily_max_duration=daily_max_duration,
+            max_places_per_day=max_places_per_day,
+            base_prz=base_prz,
+            prio_prz=prio_prz,
+            must_visit_ids=cluster_must_visits,
+            transport_speed_kmh=speed_kmh
+        )
 
+        # route 예: [start, ..., start]
+        # day_dist, day_dur
+        # route가 비면 그냥 넘어감
+        if not route:
+            daily_itineraries.append({
+                "day": day_idx + 1,
+                "route": [],
+                "daily_distance": 0.0,
+                "daily_duration": 0.0
+            })
+            continue
+
+        # 맨 마지막에 start가 붙어있으니(PTPPP), 사용자 요구 포맷에 맞게 조정
+        # "route": [실제로 방문한 node들] => MILP에서는 ID(str)
+        # 사용자는 int로 cast 원하는 듯 -> int(x)
+        # 다만 start는 str. int 변환이 안 되면 int() 실패 => 예시로 start도 int로 변환 가능한지 확인
+        # 실제 데이터에선 id가 str이긴 하지만 숫자면 변환 가능
+        def safe_int(x_str):
+            try:
+                return int(x_str)
+            except:
+                return x_str  # 변환 불가하면 그냥 string 반환
+
+        final_route_ids = [safe_int(x) for x in route]
+        daily_itineraries.append({
+            "day": day_idx + 1,
+            "route": final_route_ids,
+            "daily_distance": round(day_dist, 2),
+            "daily_duration": round(day_dur, 2),
+        })
+        overall_distance += day_dist
+
+    overall_distance = round(overall_distance, 2)
     return daily_itineraries, overall_distance
