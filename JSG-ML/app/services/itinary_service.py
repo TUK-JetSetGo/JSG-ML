@@ -154,6 +154,7 @@ def build_cost_matrix(places_dict: Dict[str, Any], place_ids: List[str]) -> List
 
     return cost_mat
 
+
 def assign_prizes(
         places_dict: Dict[str, Any],
         place_ids: List[str],
@@ -369,6 +370,29 @@ def solve_day_ptppp_milp(
     return full_route, total_dist, total_dur
 
 
+def split_evenly(place_ids: List[Any], num_days: int) -> List[List[Any]]:
+    """
+    place_ids: 방문지 ID 리스트
+    num_days: 일수
+
+    반환값: [
+      Day1에 배정된 place_ids,
+      Day2에 배정된 place_ids,
+      ...
+    ]
+    각 Day별로 가능한 한 균등하게 분배(앞쪽 Day에 나머지 우선 배정).
+    """
+    n = len(place_ids)
+    q, r = divmod(n, num_days)  # q: 몫, r: 나머지
+    result: List[List[Any]] = []
+    idx = 0
+    for day in range(num_days):
+        size = q + (1 if day < r else 0)  # 앞 r일에 하나씩 추가 배정
+        result.append(place_ids[idx : idx + size])
+        idx += size
+    return result
+
+
 def calculate_itinerary(request_data: Dict[str, Any],
                         places_json_dir: str = "./app/data/") -> Tuple[List[Dict[str, Any]], float]:
     """
@@ -437,7 +461,6 @@ def calculate_itinerary(request_data: Dict[str, Any],
         cat_keywords=themes,
         cat_bonus=100.0
     )
-
     coords = [(places_dict_total[pid]["x"], places_dict_total[pid]["y"]) for pid in valid_pids]
     if not coords:
         return [], 0.0
@@ -455,9 +478,10 @@ def calculate_itinerary(request_data: Dict[str, Any],
     cluster_sequence = list(range(num_days))
     daily_itineraries: List[Dict[str, Any]] = []
     overall_distance = 0.0
+    flat_list = [pid for cid in cluster_sequence for pid in clusters[cid]]
+    daily_clusters = split_evenly(flat_list, num_days)
+    for day_idx, cluster_places in enumerate(daily_clusters):
 
-    for day_idx, cluster_idx in enumerate(cluster_sequence):
-        cluster_places = clusters.get(cluster_idx, [])
         if not cluster_places:
             continue
 
