@@ -442,8 +442,8 @@ def calculate_itinerary(request_data: Dict[str, Any],
     else:
         daily_start_points_input = daily_start_points_input[:num_days]
 
-    daily_max_distance = request_data.get("daily_max_distance", 99999)
-    daily_max_duration = request_data.get("daily_max_duration", 99999)
+    daily_max_distance = 50 #request_data.get("daily_max_distance", 99999)
+    daily_max_duration = 250 #request_data.get("daily_max_duration", 99999)
 
     preferred_transport = user_profile.get("preferred_transport", "car")
     if preferred_transport == "walk":

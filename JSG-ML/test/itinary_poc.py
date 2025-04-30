@@ -206,50 +206,50 @@ def plot_itinerary_on_map(places_dict, daily_itineraries, output_html="itinerary
 if __name__ == "__main__":
     # 예시 응답 JSON (daily_itineraries 데이터)
     sample_response = {
-        "code": 200,
-        "message": "success",
-        "data": {
-            "daily_itineraries": [
-                {
-                    "day": 1,
-                    "route": [
-                        36183644,
-                        1985618339,
-                        38484323,
-                        20947594,
-                        36183644
-                    ],
-                    "daily_distance": 46.8,
-                    "daily_duration": 3.78
-                },
-                {
-                    "day": 2,
-                    "route": [
-                        1592500971,
-                        13491575,
-                        13491073,
-                        11491281,
-                        1592500971
-                    ],
-                    "daily_distance": 47.2,
-                    "daily_duration": 3.79
-                },
-                {
-                    "day": 3,
-                    "route": [
-                        10983870,
-                        13350575,
-                        1130170517,
-                        1892836085,
-                        10983870
-                    ],
-                    "daily_distance": 57.17,
-                    "daily_duration": 3.95
-                }
-            ],
-            "overall_distance": 151.18
-        }
-    }
+  "code": 200,
+  "message": "success",
+  "data": {
+    "daily_itineraries": [
+      {
+        "day": 1,
+        "route": [
+          11816108,
+          1169208822,
+          21093926,
+          38484323,
+          11816108
+        ],
+        "daily_distance": 35.82,
+        "daily_duration": 3.6
+      },
+      {
+        "day": 2,
+        "route": [
+          1829863449,
+          1882939263,
+          11491281,
+          11491888,
+          1739944344,
+          1829863449
+        ],
+        "daily_distance": 44.35,
+        "daily_duration": 4.74
+      },
+      {
+        "day": 3,
+        "route": [
+          11558557,
+          1259575914,
+          12995388,
+          11558557
+        ],
+        "daily_distance": 41.14,
+        "daily_duration": 2.69
+      }
+    ],
+    "overall_distance": 121.31
+  }
+}
 
     # city_id를 실제 값에 맞게 지정합니다.
     city_id = 9
