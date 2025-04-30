@@ -10,6 +10,7 @@ router = APIRouter(prefix="/itinary")
 @router.post("/", response_model=BaseResponse[ItinaryResponse])
 async def calculate_best_route(request: ItinaryRequest):
     try:
+        print(request.model_dump_json())
         daily_itineraries, overall_distance = calculate_itinerary(request.dict())
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
