@@ -6,7 +6,7 @@ charset-normalizer
 click
 fastapi
 folium
-h11
+h11>=0.16.0
 httptools
 idna
 Jinja2
