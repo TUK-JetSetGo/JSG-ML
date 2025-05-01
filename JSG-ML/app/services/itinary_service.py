@@ -641,7 +641,27 @@ def calculate_itinerary(request_data: Dict[str, Any],
     t_days_start = time.perf_counter()
     for day_idx in range(num_days):
         cluster_places = clusters.get(day_idx, [])
-        start_pid = daily_start_points_input[day_idx] or max(cluster_places, key=lambda pid: base_prz.get(pid, 0.0))
+        provided = daily_start_points_input[day_idx]
+        if provided:
+            # 유저가 직접 지정한 출발점이 있으면 그대로 사용
+            start_pid = provided
+        else:
+            # cluster_places 중 category가 "숙박" 또는 "호텔"인 곳만 추려내기
+            lodging = [
+                pid for pid in cluster_places
+                if any(
+                    (isinstance(cat, str) and cat in ["숙박", "호텔"]) or
+                    (isinstance(cat, dict) and cat.get("name") in ["숙박", "호텔"])
+                    for cat in places_dict_total[pid]["category"]
+                )
+            ]
+            if lodging:
+                # 후보가 있으면 base_prz(우선순위 점수) 최고 지점을 start로
+                start_pid = max(lodging, key=lambda pid: base_prz.get(pid, 0.0))
+            else:
+                # 없으면 기존대로 전체 중 base_prz 최고 지점을 start로
+                start_pid = max(cluster_places, key=lambda pid: base_prz.get(pid, 0.0))
+
         must_visits = day_to_must[day_idx]
         daily_args.append((
             day_idx,
@@ -655,9 +675,10 @@ def calculate_itinerary(request_data: Dict[str, Any],
             must_visits,
             speed_kmh,
             places_dict_total,
-            all_place_ids,  # ← 추가
-            full_cost_mat  # ← 추가
+            all_place_ids,
+            full_cost_mat
         ))
+
     t_days_end = time.perf_counter()
     logger.info(f"[Timing] solve_one_day 전체 {(t_days_end - t_days_start):.2f}s")
 
