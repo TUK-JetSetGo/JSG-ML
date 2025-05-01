@@ -214,13 +214,13 @@ if __name__ == "__main__":
         "day": 2,
         "route": [
           10983870,
+          1467947358,
           11491805,
-          12995388,
-          13481079,
+          1259575914,
           10983870
         ],
-        "daily_distance": 16.47,
-        "daily_duration": 3.82
+        "daily_distance": 4.17,
+        "daily_duration": 2.21
       },
       {
         "day": 3,
@@ -228,11 +228,10 @@ if __name__ == "__main__":
           11491281,
           11491807,
           11491888,
-          11707670,
           11491281
         ],
-        "daily_distance": 6.84,
-        "daily_duration": 3.34
+        "daily_distance": 5.34,
+        "daily_duration": 2.27
       },
       {
         "day": 1,
@@ -257,7 +256,7 @@ if __name__ == "__main__":
         "daily_duration": 2.04
       }
     ],
-    "overall_distance": 24.71
+    "overall_distance": 10.9
   }
 }
 

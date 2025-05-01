@@ -686,30 +686,46 @@ def calculate_itinerary(request_data: Dict[str, Any],
                     places_dict_total,
                     all_place_ids,
                     _
-                ) = daily_args[day_idx]  # args에서 필요한 정보 추출
+                ) = daily_args[day_idx]
 
-                # 거리 기준 필터링
                 fallback_pids = []
+                visited_must_visits = set()
+                for itin in daily_itineraries:
+                    visited_must_visits.update(itin["route"])
+
+                # 아직 방문하지 않은 must_visit 우선
+                unvisited_must_visits = [
+                    pid for pid in must_visits if pid != start_pid and pid not in visited_must_visits
+                ]
+
                 for pid in cluster_places:
-                    if pid == start_pid:
+                    if pid == start_pid  or pid in must_visits:
                         continue
                     dist = compute_distance(places_dict_total[start_pid], places_dict_total[pid])
                     if dist <= daily_max_distance:
-                        fallback_pids.append((pid, base_prz.get(pid, 0.0)))
+                        score = base_prz.get(pid, 0.0)
+                        fallback_pids.append((pid, score))
 
-                # 점수 기준 정렬 후 선택
-                fallback_pids.sort(key=lambda x: x[1], reverse=True)
-                selected = [pid for pid, _ in fallback_pids[:max_places_per_day - 1]]
+                # must_visit 먼저 선택
+                must_visit_selected = [pid for pid in unvisited_must_visits if any(pid == p for p, _ in fallback_pids)]
+                remaining_capacity = max_places_per_day - 1 - len(must_visit_selected)
+
+                # 나머지 base_prz 높은 순으로 채움
+                non_must = [(pid, score) for pid, score in fallback_pids if pid not in must_visit_selected]
+                non_must.sort(key=lambda x: x[1], reverse=True)
+                non_must_selected = [pid for pid, _ in non_must[:remaining_capacity]]
+
+                selected = must_visit_selected + non_must_selected
                 fallback_route = [start_pid] + selected + [start_pid]
 
-                # 거리 재계산
+                # 거리 및 시간 계산
                 fallback_dist = 0.0
                 for i in range(len(fallback_route) - 1):
                     pidA = fallback_route[i]
                     pidB = fallback_route[i + 1]
                     fallback_dist += compute_distance(places_dict_total[pidA], places_dict_total[pidB])
 
-                fallback_dur = fallback_dist / speed_kmh + len(selected) * 1.0  # 관광지별 1시간씩
+                fallback_dur = fallback_dist / speed_kmh + len(selected) * 1.0  # 관광지별 1시간
 
                 daily_itineraries.append({
                     "day": day_idx + 1,
@@ -718,9 +734,9 @@ def calculate_itinerary(request_data: Dict[str, Any],
                     "daily_duration": round(fallback_dur, 2),
                 })
                 overall_distance += fallback_dist
-                continue  # ❗ 중복 방지
+                continue
 
-            # ✅ fallback 안 쓰고 정상 결과일 경우만 여기서 append
+
             daily_itineraries.append({
                 "day": day_idx + 1,
                 "route": [int(x) for x in route],
@@ -728,6 +744,51 @@ def calculate_itinerary(request_data: Dict[str, Any],
                 "daily_duration": round(day_dur, 2),
             })
             overall_distance += day_dist
+
+    visited = set()
+    for itin in daily_itineraries:
+        visited.update(itin["route"])
+
+    unvisited_musts = [pid for pid in must_visits if pid not in visited]
+    if unvisited_musts:
+        logger.info(f"🔧 강제 삽입할 must_visit 남음: {unvisited_musts}")
+
+        must_visit_set = set(must_visits)  # 상단에서 선언해두면 속도 개선
+
+        for must_pid in unvisited_musts:
+            inserted = False
+            for itin in daily_itineraries:
+                route = itin["route"]
+                if must_pid in route:
+                    inserted = True
+                    break
+
+                middle = route[1:-1]
+                if len(middle) < max_places_per_day:
+                    route.insert(-1, must_pid)
+                    itin["route"] = route
+                    inserted = True
+                    logger.info(f"✅ must_visit {must_pid} 빈 칸에 삽입 완료 (day {itin['day']})")
+                    break
+                else:
+                    # must_visit 제외한 곳 중 base_prz 가장 낮은 것 찾기
+                    replace_candidates = [
+                        pid for pid in middle if pid not in must_visit_set
+                    ]
+                    if not replace_candidates:
+                        continue
+
+                    min_prz_pid = min(
+                        replace_candidates,
+                        key=lambda pid: base_prz.get(pid, float("inf"))
+                    )
+
+                    idx = route.index(min_prz_pid)
+                    route[idx] = must_pid
+                    itin["route"] = route
+                    inserted = True
+                    logger.info(f"♻️ must_visit {must_pid}이 base_prz 낮은 관광지 {min_prz_pid}와 교체됨 (day {itin['day']})")
+                    break
 
     overall_distance = round(overall_distance, 2)
     return daily_itineraries, overall_distance
