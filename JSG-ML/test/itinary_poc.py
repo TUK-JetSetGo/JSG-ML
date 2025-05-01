@@ -217,40 +217,37 @@ if __name__ == "__main__":
           12793674,
           16891894,
           38562971,
-          38571132,
           11697009
         ],
-        "daily_distance": 0.87,
-        "daily_duration": 4.01
-      },
-      {
-        "day": 2,
-        "route": [
-          10970369,
-          1308653221,
-          1069391641,
-          1145986591,
-          1241487322,
-          10970369
-        ],
-        "daily_distance": 73.96,
-        "daily_duration": 5.23
+        "daily_distance": 0.86,
+        "daily_duration": 3.01
       },
       {
         "day": 1,
         "route": [
           10983842,
-          1666616962,
-          876072168,
-          1985618339,
+          13491575,
+          13538096,
           11491281,
           10983842
         ],
-        "daily_distance": 85.58,
-        "daily_duration": 5.43
+        "daily_distance": 49.36,
+        "daily_duration": 3.82
+      },
+      {
+        "day": 2,
+        "route": [
+          10970369,
+          1875149782,
+          13529824,
+          1241487322,
+          10970369
+        ],
+        "daily_distance": 62.33,
+        "daily_duration": 4.04
       }
     ],
-    "overall_distance": 160.41
+    "overall_distance": 112.55
   }
 }
 

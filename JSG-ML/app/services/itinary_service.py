@@ -646,22 +646,32 @@ def calculate_itinerary(request_data: Dict[str, Any],
             # 유저가 직접 지정한 출발점이 있으면 그대로 사용
             start_pid = provided
         else:
-            # cluster_places 중 category가 "숙박" 또는 "호텔"인 곳만 추려내기
+            # 매일 첫 일정과 마지막 일정은 호텔, 나머지 일정은 호텔 제외
+            # 1) 호텔 카테고리인 곳들만 뽑아서 start_pid로 설정
             lodging = [
                 pid for pid in cluster_places
                 if any(
-                    (isinstance(cat, str) and cat in ["숙박", "호텔"]) or
+                    (isinstance(cat, str) and cat in ["숙박", "호텔"])
+                    or
                     (isinstance(cat, dict) and cat.get("name") in ["숙박", "호텔"])
                     for cat in places_dict_total[pid]["category"]
                 )
             ]
             if lodging:
-                # 후보가 있으면 base_prz(우선순위 점수) 최고 지점을 start로
                 start_pid = max(lodging, key=lambda pid: base_prz.get(pid, 0.0))
             else:
-                # 없으면 기존대로 전체 중 base_prz 최고 지점을 start로
                 start_pid = max(cluster_places, key=lambda pid: base_prz.get(pid, 0.0))
 
+            # 2) start_pid(호텔)만 남기고 나머지 호텔은 모두 제외
+            cluster_places = [
+                pid for pid in cluster_places
+                if pid == start_pid or not any(
+                    (isinstance(cat, str) and cat in ["숙박", "호텔"])
+                    or
+                    (isinstance(cat, dict) and cat.get("name") in ["숙박", "호텔"])
+                    for cat in places_dict_total[pid]["category"]
+                )
+            ]
         must_visits = day_to_must[day_idx]
         daily_args.append((
             day_idx,
@@ -720,7 +730,7 @@ def calculate_itinerary(request_data: Dict[str, Any],
                 ]
 
                 for pid in cluster_places:
-                    if pid == start_pid  or pid in must_visits:
+                    if pid == start_pid or pid in must_visits:
                         continue
                     dist = compute_distance(places_dict_total[start_pid], places_dict_total[pid])
                     if dist <= daily_max_distance:
@@ -756,7 +766,6 @@ def calculate_itinerary(request_data: Dict[str, Any],
                 })
                 overall_distance += fallback_dist
                 continue
-
 
             daily_itineraries.append({
                 "day": day_idx + 1,
