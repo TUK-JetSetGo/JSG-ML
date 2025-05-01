@@ -211,43 +211,53 @@ if __name__ == "__main__":
   "data": {
     "daily_itineraries": [
       {
-        "day": 1,
-        "route": [
-          11816108,
-          1169208822,
-          21093926,
-          38484323,
-          11816108
-        ],
-        "daily_distance": 35.82,
-        "daily_duration": 3.6
-      },
-      {
         "day": 2,
         "route": [
-          1829863449,
-          1882939263,
-          11491281,
-          11491888,
-          1739944344,
-          1829863449
+          10983870,
+          11491805,
+          12995388,
+          13481079,
+          10983870
         ],
-        "daily_distance": 44.35,
-        "daily_duration": 4.74
+        "daily_distance": 16.47,
+        "daily_duration": 3.82
       },
       {
         "day": 3,
         "route": [
-          11558557,
-          1259575914,
-          12995388,
-          11558557
+          11491281,
+          11491807,
+          11491888,
+          11707670,
+          11491281
         ],
-        "daily_distance": 41.14,
-        "daily_duration": 2.69
+        "daily_distance": 6.84,
+        "daily_duration": 3.34
+      },
+      {
+        "day": 1,
+        "route": [
+          10983842,
+          1593175278,
+          1339557107,
+          10983842
+        ],
+        "daily_distance": 0.67,
+        "daily_duration": 2.03
+      },
+      {
+        "day": 4,
+        "route": [
+          11595996,
+          13481066,
+          1075736943,
+          11595996
+        ],
+        "daily_distance": 0.72,
+        "daily_duration": 2.04
       }
     ],
-    "overall_distance": 121.31
+    "overall_distance": 24.71
   }
 }
 
